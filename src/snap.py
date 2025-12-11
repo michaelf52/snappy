@@ -15,9 +15,15 @@ import string
 import random
 import argparse
 
+# =========================
+
+# global constants and variables
+
 PUNCT = str.maketrans("", "", string.punctuation)
 MAX_BLOCK_RETRIES_DEFAULT = 0
 BLOCKING_SUSPECTED = False
+FETCH_ONLY_MODE = False
+OFFLINE_MODE = False
 
 # =========================
 # classes
@@ -73,7 +79,7 @@ def sanitize_url(url: str) -> Optional[str]:
 
 # =========================
 
-# deal with GS blocking and CAPTCHA and other antics
+# deal with GS blocking, CAPTCHA and other antics
 
 def looks_like_block_page(html: str) -> bool:
 
@@ -213,17 +219,19 @@ def iter_scholar_pages_requests(
 
 def scrape_it(html: str, 
               journal_list: List[str], 
-              normalized_journal_titles: Dict[str, str]
+              normalized_journal_titles: Dict[str, str],
+              page_idx: int,
 ) -> Tuple[
     Optional[str],          # name
     Optional[str],          # institution
-    List[str],              # research areas
+    Optional[List[str]],              # research areas
     Optional[int],          # h_all
     Optional[int],          # h_5y
     Optional[int],          # cit_all
     Optional[int],          # cit_5y
     Dict[str, int]          # journal_match_counts
 ]:
+    global FETCH_ONLY_MODE
     soup = BeautifulSoup(html, "html.parser")
 
     # ---------------------------------------------------------------------
@@ -234,94 +242,97 @@ def scrape_it(html: str,
     if name_div:
         name = name_div.get_text(strip=True)
     if name:
-        print(f"\n Scraping profile for '{name}'")
+        print(f"\n Scraping profile page {page_idx + 1} for {name}")
     else:
-        print("\n Scraping profile for 'UNKNOWN'")
+        print(f"\n Scraping profile {page_idx + 1} for 'UNKNOWN'")
 
-    # ---------------------------------------------------------------------
-    # institution / affiliation tag:
-    #   <div class="gsc_prf_il">The University of Excellence and other Buzzwords</div>
-    # ---------------------------------------------------------------------
-    institution: Optional[str] = None
-    inst_divs = soup.find_all("div", class_="gsc_prf_il")
-    if inst_divs:
-        institution = inst_divs[0].get_text(strip=True)
-    print(f" Institution: {institution if institution else 'None found'}")
+    if page_idx == 0:
+        # get the front matter data only on the first page
+        # ---------------------------------------------------------------------
+        # institution / affiliation tag:
+        #   <div class="gsc_prf_il">The University of Excellence and other Buzzwords</div>
+        # ---------------------------------------------------------------------
+        institution: Optional[str] = None
+        inst_divs = soup.find_all("div", class_="gsc_prf_il")
+        if inst_divs:
+            institution = inst_divs[0].get_text(strip=True)
+        print(f"\n Institution: {institution if institution else 'None found'}")
 
-    # ---------------------------------------------------------------------
-    # research areas / interests tags:
-    #   <div id="gsc_prf_int">
-    #       <a class="gsc_prf_inta">Area 1</a>
-    #       <a class="gsc_prf_inta">Area 2</a>
-    #   </div>
-    # ---------------------------------------------------------------------
-    research_areas: List[str] = []
-    int_div = soup.find("div", id="gsc_prf_int")
-    if int_div:
-        for a in int_div.find_all("a", class_="gsc_prf_inta"):
-            text = a.get_text(strip=True)
-            if text:
-                research_areas.append(text)
-    if research_areas:
-        print(" Research areas: " + ", ".join(research_areas))
-    else:
-        print(" Research areas: None found")
+        # ---------------------------------------------------------------------
+        # research areas / interests tags:
+        #   <div id="gsc_prf_int">
+        #       <a class="gsc_prf_inta">Area 1</a>
+        #       <a class="gsc_prf_inta">Area 2</a>
+        #   </div>
+        # ---------------------------------------------------------------------
+        research_areas: List[str] = []
+        int_div = soup.find("div", id="gsc_prf_int")
+        if int_div:
+            for a in int_div.find_all("a", class_="gsc_prf_inta"):
+                text = a.get_text(strip=True)
+                if text:
+                    research_areas.append(text)
+        if research_areas:
+            print(" Research areas: " + ", ".join(research_areas))
+        else:
+            print(" Research areas: None found")
 
-    # ---------------------------------------------------------------------
-    # h-index and citations table tags:
-    # <table id="gsc_rsb_st">
-    #   rows for "Citations", "h-index", "i10-index"
-    #   columns: [label, All, Since YYYY]
-    # ---------------------------------------------------------------------
-    h_all: Optional[int] = None
-    h_5y: Optional[int] = None
-    cit_all: Optional[int] = None
-    cit_5y: Optional[int] = None
+        # ---------------------------------------------------------------------
+        # h-index and citations table tags:
+        # <table id="gsc_rsb_st">
+        #   rows for "Citations", "h-index", "i10-index"
+        #   columns: [label, All, Since YYYY]
+        # ---------------------------------------------------------------------
+        h_all: Optional[int] = None
+        h_5y: Optional[int] = None
+        cit_all: Optional[int] = None
+        cit_5y: Optional[int] = None
 
-    table = soup.find("table", id="gsc_rsb_st")
-    if table:
-        for row in table.find_all("tr"):
-            cells = row.find_all("td")
-            if not cells:
-                continue
+        table = soup.find("table", id="gsc_rsb_st")
+        if table:
+            for row in table.find_all("tr"):
+                cells = row.find_all("td")
+                if not cells:
+                    continue
 
-            label = cells[0].get_text(strip=True).lower()
+                label = cells[0].get_text(strip=True).lower()
 
-            # Citations row
-            if "citations" in label:
-                if len(cells) >= 2:
-                    text_all = cells[1].get_text(strip=True)
-                    try:
-                        cit_all = int(text_all)
-                    except ValueError:
-                        cit_all = None
+                # Citations row
+                if "citations" in label:
+                    if len(cells) >= 2:
+                        text_all = cells[1].get_text(strip=True)
+                        try:
+                            cit_all = int(text_all)
+                        except ValueError:
+                            cit_all = None
 
-                if len(cells) >= 3:
-                    text_since = cells[2].get_text(strip=True)
-                    try:
-                        cit_5y = int(text_since)
-                    except ValueError:
-                        cit_5y = None
+                    if len(cells) >= 3:
+                        text_since = cells[2].get_text(strip=True)
+                        try:
+                            cit_5y = int(text_since)
+                        except ValueError:
+                            cit_5y = None
 
-            # h-index row
-            if "h-index" in label:
-                if len(cells) >= 2:
-                    text_all = cells[1].get_text(strip=True)
-                    try:
-                        h_all = int(text_all)
-                    except ValueError:
-                        h_all = None
+                # h-index row
+                if "h-index" in label:
+                    if len(cells) >= 2:
+                        text_all = cells[1].get_text(strip=True)
+                        try:
+                            h_all = int(text_all)
+                        except ValueError:
+                            h_all = None
 
-                if len(cells) >= 3:
-                    text_5y = cells[2].get_text(strip=True)
-                    try:
-                        h_5y = int(text_5y)
-                    except ValueError:
-                        h_5y = None
+                    if len(cells) >= 3:
+                        text_5y = cells[2].get_text(strip=True)
+                        try:
+                            h_5y = int(text_5y)
+                        except ValueError:
+                            h_5y = None
 
-    print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
-    print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
+        print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+        print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
 
+    # journal matching on all pages
     # ---------------------------------------------------------------------
     # journal matching in publications table
     # <table id="gsc_a_t">...</table>
@@ -362,15 +373,20 @@ def scrape_it(html: str,
             if matched_journal:
                 print(f" Journal match: '{raw_info}' -> '{matched_journal}'")
                 journal_match_counts[matched_journal] += 1
-    global FETCH_ONLY_MODE
+
     if not FETCH_ONLY_MODE:                  
         print(f" Total articles on this page: {article_count}")
-    #print(" Journal counts:")
-    #for journal, count in journal_match_counts.items():
-    #    print(f"  • {journal}: {count}")
+        print(" Journal match counts on this page:")    
+        for journal, count in journal_match_counts.items():
+            if count > 0:
+                print(f"  {journal}: {count}")
+
     print("\n ------------------------------------------\n")
 
-    return name, institution, research_areas, h_all, h_5y, cit_all, cit_5y, journal_match_counts, article_count
+    if page_idx == 0:
+        return name, institution, research_areas, h_all, h_5y, cit_all, cit_5y, journal_match_counts, article_count
+    else:
+        return journal_match_counts, article_count
 
 # ========================
 
@@ -425,7 +441,11 @@ def scrape_profile_all_publications_requests(
     Optional[int],          # cit_all
     Optional[int],          # cit_5y
     Dict[str, int],         # total journal_match_counts across all pages
+    int,                    # total_article_count
+    bool                    # any_page
 ]:
+    global FETCH_ONLY_MODE
+    global BLOCKING_SUSPECTED
 
     name: Optional[str] = None
     institution: Optional[str] = None
@@ -458,7 +478,7 @@ def scrape_profile_all_publications_requests(
         )
     ):
         any_page = True
-
+        
         if cache_html:
             page_num = page_idx + 1
             out_path = Path(html_dir) / f"{user_id}_p{page_num}.htm"
@@ -466,27 +486,25 @@ def scrape_profile_all_publications_requests(
                 f.write(html)
             print(f"  Cached HTML for {user_id} page {page_num} -> {out_path}")
 
-        (
-            page_name,
-            page_institution,
-            page_research_areas,
-            page_h_all,
-            page_h_5y,
-            page_cit_all,
-            page_cit_5y,
-            page_journal_counts,
-            page_article_count,
-        ) = scrape_it(html, journal_list, normalized_journal_titles)
-
-        # extract profile-level info from the first page
         if page_idx == 0:
-            name = page_name
-            institution = page_institution
-            research_areas = page_research_areas
-            h_all = page_h_all
-            h_5y = page_h_5y
-            cit_all = page_cit_all
-            cit_5y = page_cit_5y
+            # first page - get full profile info
+            (
+                name,
+                institution,
+                research_areas,
+                h_all,
+                h_5y,
+                cit_all,
+                cit_5y,
+                page_journal_counts,
+                page_article_count,
+            ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
+        else:
+            # subsequent pages - only get journal and article counts
+            (
+                page_journal_counts,
+                page_article_count,
+            ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)
 
         # accumulate journal counts and article counts
         for j in journal_list:
@@ -494,30 +512,26 @@ def scrape_profile_all_publications_requests(
 
         total_article_count += page_article_count
         
-        # add another delay between pages just to avoid looking like a bot 
-        #sleep_s = random.uniform(3.0, 12.0)
-        #print(f" again ... Random (human-like) delay for {sleep_s:.1f} seconds before next page...")
-        #time.sleep(sleep_s)
-        
     if not any_page:
         print(f"\n Warning - No publication pages scraped for URL: {profile_url}")
         # likely blocked or unreachable
-        global BLOCKING_SUSPECTED
         BLOCKING_SUSPECTED = True        
         raise GSBlockedError(f"Blocked or no pages for {profile_url}")
-
-    global FETCH_ONLY_MODE
-    if not FETCH_ONLY_MODE:
-        print("\n === Aggregated over ALL publications pages ===")
-        print(f" Name: {name}")
-        print(f" Institution: {institution}")
-        if research_areas:
-            print(" Research areas: " + ", ".join(research_areas))
-        print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
-        print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
-        print(f" Total articles (all pages): {total_article_count}")
-        
-    print("\n ===============================================================================\n")
+    else:
+        if not FETCH_ONLY_MODE:
+            print(" === Aggregated over ALL publications pages ===")
+            print(f" Name: {name}")
+            print(f" Institution: {institution}")
+            if research_areas:
+                print(" Research areas: " + ", ".join(research_areas))
+            print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+            print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
+            print(f" Total articles (all pages): {total_article_count}")
+            print(" Journal match counts (all pages):")
+            for journal, count in total_journal_counts.items():
+                if count > 0:
+                    print(f"  {journal}: {count}")
+        print("\n ===============================================================================\n")
 
     return (
         name,
@@ -528,7 +542,8 @@ def scrape_profile_all_publications_requests(
         cit_all,
         cit_5y,
         total_journal_counts,
-        total_article_count
+        total_article_count,
+        any_page
     )
 
 # =========================
@@ -551,6 +566,7 @@ def scrape_profile_all_publications_offline(
     Optional[int],          # cit_5y
     Dict[str, int],         # total journal_match_counts across all pages
     int,                    # total_article_count
+    bool                    # any_page
 ]:
 
     name: Optional[str] = None
@@ -577,50 +593,51 @@ def scrape_profile_all_publications_offline(
             break
 
         any_page = True
-        page_idx += 1
-        print(f"\n Loading cached HTML for {user_id} page {page_num} -> {path}")
+
+        print(f" Loading cached HTML for {user_id} page {page_num} -> {path}")
 
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             html = f.read()
 
-        (
-            page_name,
-            page_institution,
-            page_research_areas,
-            page_h_all,
-            page_5y,
-            page_cit_all,
-            page_cit_5y,
-            page_journal_counts,
-            page_article_count,
-        ) = scrape_it(html, journal_list, normalized_journal_titles)
-
-        if page_idx == 1:
-            name = page_name
-            institution = page_institution
-            research_areas = page_research_areas
-            h_all = page_h_all
-            h_5y = page_5y
-            cit_all = page_cit_all
-            cit_5y = page_cit_5y
+        if page_idx == 0:
+            # first page - get full profile info
+            (
+                name,
+                institution,
+                research_areas,
+                h_all,
+                h_5y,
+                cit_all,
+                cit_5y,
+                page_journal_counts,
+                page_article_count,
+            ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
+        else:
+            # subsequent pages - only get journal and article counts
+            (
+                page_journal_counts,
+                page_article_count,
+            ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)
 
         for j in journal_list:
             total_journal_counts[j] += page_journal_counts.get(j, 0)
 
         total_article_count += page_article_count
+        
+        page_idx += 1
 
     if not any_page:
-        print(f"\n Warning - No cached HTML pages found for user_id={user_id} in {html_dir}")
-
-    print("\n === Aggregated over ALL cached pages (offline) ===")
-    print(f" Name: {name}")
-    print(f" Institution: {institution}")
-    if research_areas:
-        print(" Research areas: " + ", ".join(research_areas))
-    print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
-    print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
-    print(f" Total articles (all pages): {total_article_count}")
-    print("\n ===============================================================================\n")
+        print(f"\n Warning - No cached HTML pages found for user_id={user_id} in {html_dir}\n")
+    else:
+        print(" === Aggregated over ALL cached pages (offline) ===")
+        print(f" Name: {name}")
+        print(f" Institution: {institution}")
+        if research_areas:
+            print(" Research areas: " + ", ".join(research_areas))
+        print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+        print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
+        print(f" Total articles (all pages): {total_article_count}")
+        print("\n ===============================================================================\n")
 
     return (
         name,
@@ -632,6 +649,7 @@ def scrape_profile_all_publications_offline(
         cit_5y,
         total_journal_counts,
         total_article_count,
+        any_page
     )
 
 # =========================
@@ -689,17 +707,16 @@ def process_profile(
     pagesize: int = 100,
     cache_html: bool = False,
     html_dir: str = "./html",
-    offline: bool = False,
 ) -> Dict[str, object] | None:
 
-    # debug print candidate
-    # print("\n Candidate data preview:")
-    # print(candidate)
-
-    print(f"\n === Processing profile for candidate {candidate.candidate_id}: {candidate.candidate_name} ===")
+    global BLOCKING_SUSPECTED
+    global OFFLINE_MODE
+    info_found = False
+    
+    print(f"\n === Processing profile for candidate {candidate.candidate_id}: {candidate.candidate_name} ===\n")
     
     url = candidate.gs_url
-            
+        
     if pd.isna(url):
         print("\n Warning - Empty Google Scholar Link, skipping profile.")
         record = empty_record( 
@@ -707,9 +724,7 @@ def process_profile(
             journal_list=journal_list
         )
         return record
-    
-    print(f" Attempting to scrape info from Google Scholar URL: {url}")
-        
+            
     url = sanitize_url(str(url).strip())
     if url is None:
         print("\n Warning - Could not sanitize URL, skipping profile.")
@@ -719,7 +734,7 @@ def process_profile(
         )
         return record
     
-    if offline:
+    if OFFLINE_MODE:
         try:
             print(" Offline mode: parsing cached HTML only (no web requests).")
             (
@@ -732,6 +747,7 @@ def process_profile(
                 cit_5y,
                 journal_counts,
                 article_count,
+                info_found,
             ) = scrape_profile_all_publications_offline(
                 url,
                 journal_list,
@@ -743,7 +759,9 @@ def process_profile(
             print(f" Details: {e}")
             return empty_record(candidate=candidate, journal_list=journal_list)
     else:
+
         try:
+            print(f" Attempting to scrape info from Google Scholar URL: {url}")
             (
                 gs_name,
                 gs_institution,
@@ -754,6 +772,7 @@ def process_profile(
                 cit_5y,
                 journal_counts,
                 article_count,
+                info_found,
             ) = scrape_profile_all_publications_requests(
                 url,
                 journal_list,
@@ -764,12 +783,18 @@ def process_profile(
                 html_dir=html_dir,
             )
         except GSBlockedError as e:
-            global BLOCKING_SUSPECTED
             BLOCKING_SUSPECTED = True
             print(f" Detected probable Google Scholar block while processing {url}.")
             print(f" Details: {e}")
             return empty_record(candidate=candidate, journal_list=journal_list)
+        except Exception as e:
+            print(f" Detected error while processing {url}.")
+            print(f" Details: {e}")
+            return empty_record(candidate=candidate, journal_list=journal_list)
         
+    if (not info_found):
+        print(f" Warning - No scrapable pages found for URL: {url}")
+        return empty_record(candidate=candidate, journal_list=journal_list)
 
     if (
         gs_name is None
@@ -778,6 +803,7 @@ def process_profile(
         and all(v == 0 for v in journal_counts.values())
     ):
         print(f" Warning - No meaningful data scraped for URL: {url}")
+        return empty_record(candidate=candidate, journal_list=journal_list)
     
     record = {
         "candidate_id": candidate.candidate_id,
@@ -874,6 +900,9 @@ def open_default_browser(url: str = "https://www.google.com") -> bool:
 
 def main():
     
+    global OFFLINE_MODE
+    global FETCH_ONLY_MODE
+    
     parser = argparse.ArgumentParser(
         description="Snappy - Super Neat Academic Profile Parser"
     )
@@ -890,8 +919,8 @@ def main():
     )
 
     args = parser.parse_args()
-    offline_mode = args.offline
-    fetch_only_mode = args.fetch_only
+    OFFLINE_MODE = args.offline
+    FETCH_ONLY_MODE = args.fetch_only
     
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print(" ~~~~~~ Welcome to Snappy - The Super Neat Academic Profile Parser.py ~~~~~~")
@@ -900,11 +929,12 @@ def main():
     # relative path for input/output files
     # if user is in snappy/src directory, go up one level
     cwd = os.getcwd()
-    if cwd.endswith("snappy/src"):
+    print(f" Current working directory: {cwd}")
+    if cwd.endswith("src"):
         rel_path = "../user/"
     elif cwd.endswith("snappy"):
         rel_path = "./user/"
-    elif cwd.endswith("snappy/user"):
+    elif cwd.endswith("user"):
         rel_path = "./"
     else:
         print(f"\n ERROR - Please run this script from within the 'snappy/user' directory.\n")
@@ -939,36 +969,32 @@ def main():
         print(f" Exception: {type(e).__name__}: {e}\n")
         return
 
-    # confirm offline or fetch-only mode
-    if offline_mode:
-        print(" Running in OFFLINE mode (shhh!): I will not contact Google Scholar,")
-        print(" only parse HTML files already present in the 'html' directory.\n")
-    elif fetch_only_mode:
-        print(" Running in FETCH-ONLY mode: I will download and cache pages from Google Scholar, ")
-        print(" but will not parse or write to output files.\n")
-    else:
+    # give user a chance to invoke these modes if not already specified
+    if not OFFLINE_MODE and not FETCH_ONLY_MODE:
         # give user option to run in offline mode
         answer = input(
-            " Do you want to run in OFFLINE mode (parse cached HTML only)? (y/N): "
+            "\n Do you want to run in OFFLINE mode (parse cached HTML only)? (y/N): "
         ).strip().lower()
         if answer == "y":
-            offline_mode = True
-            print("\n Running in OFFLINE mode (shhh!): I will not contact Google Scholar,")
-            print(" only parse HTML files already present in the 'html' directory.\n")
-        if not offline_mode:
+            OFFLINE_MODE = True
+
+        if not OFFLINE_MODE:
             # give user option to run in fetch-only mode
             answer = input(
-                " Do you want to run in FETCH-ONLY mode (download and cache pages only)? (y/N): "
+                "\n Do you want to run in FETCH-ONLY mode (download and cache pages only)? (y/N): "
             ).strip().lower()
             if answer == "y":
-                fetch_only_mode = True
-                print("\n Running in FETCH-ONLY mode: I will download and cache pages from Google Scholar, ")
-                print(" but will not parse or write to output files.\n")
-    
-    # set a global FETCH_ONLY_MODE flag
-    global FETCH_ONLY_MODE
-    FETCH_ONLY_MODE = fetch_only_mode
-            
+                FETCH_ONLY_MODE = True
+                
+    if OFFLINE_MODE:
+        print("\n Running in OFFLINE mode (shhh!): I will not contact Google Scholar.")
+        print(" Instead I will parse HTML files already present in the 'html' directory.\n")
+    elif FETCH_ONLY_MODE:
+        print("\n Running in FETCH-ONLY mode: I will download and cache pages from Google Scholar, ")
+        print(" but will not parse or write to output files.\n")
+    else:
+        print("\n Running in NORMAL mode: I will download and parse Google Scholar profile pages.\n")
+                        
     # request HR report name
     hr_report_file = input(
         " Enter the name of the HR report file to process "
@@ -1080,10 +1106,10 @@ def main():
     html_dir = rel_path + "html"
     cache_html = False
 
-    if offline_mode:
+    if OFFLINE_MODE:
         # in offline mode we never write HTML, we just read from html_dir
         os.makedirs(html_dir, exist_ok=True)
-        print(f" Offline mode: will use cached HTML pages under: {html_dir}")
+        print(f"\n Offline mode: I will use cached HTML pages under: {html_dir}")
     else:
         cache_html = True
         os.makedirs(html_dir, exist_ok=True)
@@ -1129,14 +1155,14 @@ def main():
     print("\n ===============================================================================\n")
 
     session: Optional[requests.Session] = None
-    if not offline_mode:
+    if not OFFLINE_MODE:
         session = requests.Session()
 
     records: List[Dict[str, object]] = []
     
     for candidate in df_hr.itertuples(index=False):
         
-        if fetch_only_mode:
+        if FETCH_ONLY_MODE:
             # just fetch and cache HTML, no parsing / records
             if session is None:
                 print(" ERROR - Session is None in fetch-only mode. This should not happen.")
@@ -1158,7 +1184,6 @@ def main():
                 pagesize=100,
                 cache_html=cache_html,
                 html_dir=html_dir,
-                offline=offline_mode,
             )
             if record is not None:
                 records.append(record)
@@ -1172,27 +1197,27 @@ def main():
                     break
 
         # random delay between profiles to emulate human behaviour and reduce chance of blocking
-        if not offline_mode and not fetch_only_mode:
+        if not OFFLINE_MODE and not FETCH_ONLY_MODE:
             sleep_s = random.uniform(5.0, 12.0)
             print(f" Random (human-like) delay for {sleep_s:.1f} seconds before next profile...")
             time.sleep(sleep_s)
-        elif fetch_only_mode:
+        elif FETCH_ONLY_MODE:
             sleep_s = random.uniform(5.0, 12.0)
             print(f" Random (human-like) delay {sleep_s:.1f} seconds before next fetch...")
             time.sleep(sleep_s)
 
-    if fetch_only_mode:
+    if FETCH_ONLY_MODE:
         print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n") 
         print(" Fetch-only mode complete.")
         print(" Cached HTML files (if any) are in the 'html' directory.")
-        print(" You can now rerun Snappy with the --offline flag to parse them without contacting Google Scholar.\n")
+        print(" You can now rerun Snappy in OFFLINE mode to parse them without contacting Google Scholar.\n")
         print(" Bye!\n")       
         print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
         return
 
     if not records:
         print(" No records to write (no profiles scraped). Bye!\n")
-        print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")        
+        print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
         return
     
     # write results to CSV
@@ -1253,13 +1278,12 @@ def main():
     except Exception as e:
         print(f"\n ERROR - Could not convert CSV to Excel. Exception: {type(e).__name__}: {e}")
 
-
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    print(f"\n All done! Wrote {len(records)} rows to {output_file} and {xlsx_file}.")
+    print(f"\n All done! Wrote {len(records)} rows to {xlsx_file}.")
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
     # optional: step through URLs in default browser
-    if not offline_mode:
+    if not OFFLINE_MODE:
         print("\n Would you like to step through each of the URLs? (y/N): ", end="")
         choice = input().strip().lower()
 
@@ -1273,12 +1297,9 @@ def main():
                     print(" Warning: Could not open browser. Stopping step-through.\n")
                     break
                 time.sleep(0.2)
-                input(" Press Enter to continue to the next URL...")
+                input(" Press Enter to continue to the next URL or Ctrl-C to quit...")
 
-
-    print(f"\n All done! The results are in {output_file}. Bye!\n")
-    print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
-
+    print(f"\n Bye!\n")
 
 # =========================
 # main entry point
