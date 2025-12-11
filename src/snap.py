@@ -5,16 +5,27 @@ import webbrowser
 import time
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-from typing import Optional, Tuple, List, Dict, Generator, Any
+from typing import Optional, Tuple, List, Dict, Generator
 import requests
 import pandas as pd
 from pandas.api.types import is_string_dtype
 from bs4 import BeautifulSoup
 import re
 import string
+import random
+import argparse
 
 PUNCT = str.maketrans("", "", string.punctuation)
-MAX_BLOCK_RETRIES_DEFAULT = 1
+MAX_BLOCK_RETRIES_DEFAULT = 0
+BLOCKING_SUSPECTED = False
+
+# =========================
+# classes
+# =========================
+
+class GSBlockedError(Exception):
+    '''Raised when those Google yahoos appear to be blocking requests.'''
+    BLOCKING_SUSPECTED = True
 
 # =========================
 # helper functions
@@ -109,7 +120,7 @@ def iter_scholar_pages_requests(
     session: requests.Session,
     pagesize: int = 100,
     max_pages: int = 50,
-    delay: float = 1.0,              # normal delay between successful pages
+    delay: float = 5.0,              # normal delay between successful pages
     max_block_retries: int = 5,      # how many times to retry a blocked page
     block_backoff_base: float = 10.0 # starting backoff in seconds
 ) -> Generator[str, None, None]:
@@ -147,15 +158,9 @@ def iter_scholar_pages_requests(
 
             # deal with status-based blocking
             if resp.status_code in (429, 503):
-                block_attempts += 1
                 print(f"  HTTP {resp.status_code} suggests rate limiting or temporary block.")
-                if block_attempts > max_block_retries:
-                    print("  Too many block responses, stopping pagination.")
-                    return
-                backoff = block_backoff_base * (2 ** (block_attempts - 1))
-                print(f"  Backing off for {backoff:.1f} seconds before retrying...")
-                time.sleep(backoff)
-                continue
+                print("  Stopping pagination for this profile.")
+                return
 
             if resp.status_code != 200:
                 print(f"  Error: HTTP {resp.status_code}, stopping.")
@@ -165,15 +170,9 @@ def iter_scholar_pages_requests(
 
             # check for CAPTCHA / unusual traffic page
             if looks_like_block_page(html):
-                block_attempts += 1
                 print("  Page looks like a CAPTCHA / 'unusual traffic' block.")
-                if block_attempts > max_block_retries:
-                    print("  Too many block-like responses, stopping pagination.")
-                    return
-                backoff = block_backoff_base * (2 ** (block_attempts - 1))
-                print(f"  Backing off for {backoff:.1f} seconds then retrying this page...")
-                time.sleep(backoff)
-                continue
+                print("  Stopping pagination for this profile.")
+                return
 
             # woohoo - we have a page
             break
@@ -203,7 +202,10 @@ def iter_scholar_pages_requests(
         page_index += 1
 
         # add another delay between pages just to avoid looking like a bot 
-        time.sleep(delay)
+        sleep_s = random.uniform(3.0, 12.0)
+        print(f" Random (human-like) delay for {sleep_s:.1f} seconds before next page...")
+        time.sleep(sleep_s)
+
 
 # =========================
 
@@ -371,28 +373,6 @@ def scrape_it(html: str,
 
 # ========================
 
-# clean journal name for matching
-
-def normalize_journal_name_old(name: str) -> str:
-
-    name = name.strip().lower()
-
-    # part before first comma 
-    name = name.split(",", 1)[0]
-
-    # remove trailing parenthetical suffix
-    name = re.sub(r"\s*\([^)]*\)\s*$", "", name)
-
-    # remove trailing volume numbers
-    name = re.sub(r"\s+\d+$", "", name)
-
-    # collapse multiple spaces
-    name = re.sub(r"\s+", " ", name)
-
-    return name
-
-# ========================
-
 # normalize a journal name by cleaning punctuation and whitespace
 
 def normalize_journal_name(name: str) -> str:
@@ -430,11 +410,11 @@ def scrape_profile_all_publications_requests(
     session: requests.Session,
     pagesize: int = 100,
     max_pages: int = 50,
-    delay: float = 1.0,
+    delay: float = 5.0,
     max_block_retries: int = MAX_BLOCK_RETRIES_DEFAULT,
     block_backoff_base: float = 10.0,
     cache_html: bool = False,
-    html_dir: str = "./user/html",
+    html_dir: str = "./html",
 ) -> Tuple[
     Optional[str],          # name
     Optional[str],          # institution
@@ -513,8 +493,15 @@ def scrape_profile_all_publications_requests(
 
         total_article_count += page_article_count
         
+        # add another delay between pages just to avoid looking like a bot 
+        #sleep_s = random.uniform(3.0, 12.0)
+        #print(f" again ... Random (human-like) delay for {sleep_s:.1f} seconds before next page...")
+        #time.sleep(sleep_s)
+        
     if not any_page:
         print(f"\n Warning - No publication pages scraped for URL: {profile_url}")
+        # likely blocked or unreachable
+        raise GSBlockedError(f"Blocked or no pages for {profile_url}")
 
     print("\n === Aggregated over ALL publications pages ===")
     print(f" Name: {name}")
@@ -527,7 +514,7 @@ def scrape_profile_all_publications_requests(
     #for j, c in total_journal_counts.items():
     #    print(f"  • {j}: {c}")
     print(f" Total articles (all pages): {total_article_count}")
-    print("\n =============================================\n")
+    print("\n ===============================================================================\n")
 
     return (
         name,
@@ -543,6 +530,150 @@ def scrape_profile_all_publications_requests(
 
 # =========================
 
+# step through all GS pages and scrape profile info (offline mode)
+
+def scrape_profile_all_publications_offline(
+    profile_url: str,
+    journal_list: List[str],
+    normalized_journal_titles: Dict[str, str],
+    html_dir: str = "./html",
+    max_pages: int = 50,
+) -> Tuple[
+    Optional[str],          # name
+    Optional[str],          # institution
+    List[str],              # research_areas
+    Optional[int],          # h_all
+    Optional[int],          # h_5y
+    Optional[int],          # cit_all
+    Optional[int],          # cit_5y
+    Dict[str, int],         # total journal_match_counts across all pages
+    int,                    # total_article_count
+]:
+
+    name: Optional[str] = None
+    institution: Optional[str] = None
+    research_areas: List[str] = []
+    h_all: Optional[int] = None
+    h_5y: Optional[int] = None
+    cit_all: Optional[int] = None
+    cit_5y: Optional[int] = None
+
+    total_journal_counts: Dict[str, int] = {j: 0 for j in journal_list}
+    total_article_count = 0
+
+    any_page = False
+    user_id = user_id_from_url(profile_url) or "UNKNOWN"
+
+    base_dir = Path(html_dir)
+    page_idx = 0
+
+    for page_num in range(1, max_pages + 1):
+        path = base_dir / f"{user_id}_p{page_num}.htm"
+        if not path.exists():
+            # no more cached pages
+            break
+
+        any_page = True
+        page_idx += 1
+        print(f"\n Loading cached HTML for {user_id} page {page_num} -> {path}")
+
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            html = f.read()
+
+        (
+            page_name,
+            page_institution,
+            page_research_areas,
+            page_h_all,
+            page_5y,
+            page_cit_all,
+            page_cit_5y,
+            page_journal_counts,
+            page_article_count,
+        ) = scrape_it(html, journal_list, normalized_journal_titles)
+
+        if page_idx == 1:
+            name = page_name
+            institution = page_institution
+            research_areas = page_research_areas
+            h_all = page_h_all
+            h_5y = page_5y
+            cit_all = page_cit_all
+            cit_5y = page_cit_5y
+
+        for j in journal_list:
+            total_journal_counts[j] += page_journal_counts.get(j, 0)
+
+        total_article_count += page_article_count
+
+    if not any_page:
+        print(f"\n Warning - No cached HTML pages found for user_id={user_id} in {html_dir}")
+
+    print("\n === Aggregated over ALL cached pages (offline) ===")
+    print(f" Name: {name}")
+    print(f" Institution: {institution}")
+    if research_areas:
+        print(" Research areas: " + ", ".join(research_areas))
+    print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+    print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
+    print(f" Total articles (all pages): {total_article_count}")
+    print("\n ===============================================================================\n")
+
+    return (
+        name,
+        institution,
+        research_areas,
+        h_all,
+        h_5y,
+        cit_all,
+        cit_5y,
+        total_journal_counts,
+        total_article_count,
+    )
+
+# =========================
+
+# fetch and cache profile HTML only
+
+def fetch_and_cache_profile(
+    candidate: tuple,
+    session: requests.Session,
+    pagesize: int,
+    html_dir: str,
+) -> None:
+
+    print(f"\n === Fetch-only: candidate {candidate.candidate_id}: {candidate.candidate_name} ===")
+
+    url = candidate.gs_url
+
+    if pd.isna(url):
+        print("  Warning - Empty Google Scholar Link, skipping profile.")
+        return
+
+    url_str = str(url).strip()
+    print(f"  Attempting to fetch and cache Google Scholar URL: {url_str}")
+
+    sanitized = sanitize_url(url_str)
+    if sanitized is None:
+        print("  Warning - Could not sanitize URL, skipping profile.")
+        return
+
+    # set up dummy journal list and normalized titles to satisfy function signature
+    dummy_journal_list: List[str] = []
+    dummy_normalized: Dict[str, str] = {}
+
+    _ = scrape_profile_all_publications_requests(
+        sanitized,
+        dummy_journal_list,
+        dummy_normalized,
+        session,
+        pagesize=pagesize,
+        cache_html=True,
+        html_dir=html_dir,
+    )
+
+# =========================
+
 # main driver to process a profile
 
 def process_profile(
@@ -553,6 +684,7 @@ def process_profile(
     pagesize: int = 100,
     cache_html: bool = False,
     html_dir: str = "./html",
+    offline: bool = False,
 ) -> Dict[str, object] | None:
 
     # debug print candidate
@@ -582,25 +714,54 @@ def process_profile(
         )
         return record
     
-    (
-        gs_name,
-        gs_institution,
-        gs_research_areas,
-        h_all,
-        h_5y,
-        cit_all,
-        cit_5y,
-        journal_counts,
-        article_count,
-    ) = scrape_profile_all_publications_requests(
-        url,
-        journal_list,
-        normalized_journal_titles,
-        session,
-        pagesize=pagesize,
-        cache_html=cache_html,
-        html_dir=html_dir,
-    )
+    if offline:
+        try:
+            print(" Offline mode: parsing cached HTML only (no web requests).")
+            (
+                gs_name,
+                gs_institution,
+                gs_research_areas,
+                h_all,
+                h_5y,
+                cit_all,
+                cit_5y,
+                journal_counts,
+                article_count,
+            ) = scrape_profile_all_publications_offline(
+                url,
+                journal_list,
+                normalized_journal_titles,
+                html_dir=html_dir,
+            )
+        except Exception as e:
+            print(f" Detected error while processing cached HTML for {url}.")
+            print(f" Details: {e}")
+            return empty_record(candidate=candidate, journal_list=journal_list)
+    else:
+        try:
+            (
+                gs_name,
+                gs_institution,
+                gs_research_areas,
+                h_all,
+                h_5y,
+                cit_all,
+                cit_5y,
+                journal_counts,
+                article_count,
+            ) = scrape_profile_all_publications_requests(
+                url,
+                journal_list,
+                normalized_journal_titles,
+                session,
+                pagesize=pagesize,
+                cache_html=cache_html,
+                html_dir=html_dir,
+            )
+        except GSBlockedError as e:
+            print(f" Detected probable Google Scholar block while processing {url}.")
+            print(f" Details: {e}")
+            return empty_record(candidate=candidate, journal_list=journal_list)
 
     if (
         gs_name is None
@@ -644,12 +805,14 @@ def process_profile(
 # =========================
 
 # return an empty record for failed profiles
+
 def empty_record(
     candidate: tuple, 
     journal_list: List[str]
 ) -> Dict[str, object]:
    
-    print(f"\n Setting empty record <=========================================\n")
+    print(f"\n Setting empty record \n")
+    print("\n ===============================================================================\n")
     record = {
         "candidate_id": candidate.candidate_id,
         "candidate_name": candidate.candidate_name,
@@ -660,23 +823,23 @@ def empty_record(
         "expertise_area": candidate.expertise_area,
         "academic_level": candidate.academic_level,
         "PhD_year": candidate.PhD_year,
-        "gs_url": "not avail",           
+        "gs_url": "N/A",           
         "PhD_institution": candidate.PhD_institution,
         "YNM": "",
         "comments": "",
         "recruiter_notes": "",     
-        "gs_name": "not avail",
-        "gs_institution": "not avail",
-        "gs_research_areas": "not avail",
-        "citations_all": "not avail",
-        "citations_5y": "not avail",
-        "h_index_all": "not avail",
-        "h_index_5y": "not avail",
-        "article_count": "not avail",
-        "journal_count_tot": "not avail",
+        "gs_name": "N/A",
+        "gs_institution": "N/A",
+        "gs_research_areas": "N/A",
+        "citations_all": "N/A",
+        "citations_5y": "N/A",
+        "h_index_all": "N/A",
+        "h_index_5y": "N/A",
+        "article_count": "N/A",
+        "journal_count_tot": "N/A",
     }
     for journal in journal_list:
-        record[journal] = "not avail"
+        record[journal] = "N/A"
     return record
 
 # =========================
@@ -697,21 +860,110 @@ def open_default_browser(url: str = "https://www.google.com") -> bool:
         print(f" Exception: {type(e).__name__}: {e}")
         return False
 
-
 # =========================
 # main
 # =========================
 
 def main():
+    
+    parser = argparse.ArgumentParser(
+        description="Snappy - Super Neat Academic Profile Parser"
+    )
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
+        "--offline",
+        action="store_true",
+        help="Only parse existing cached HTML in user/html; do not fetch from Google Scholar.",
+    )
+    mode_group.add_argument(
+        "--fetch-only",
+        action="store_true",
+        help="Only fetch and cache HTML from Google Scholar; do not parse or write outputs.",
+    )
+
+    args = parser.parse_args()
+    offline_mode = args.offline
+    fetch_only_mode = args.fetch_only
+    
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print(" ~~~~~~ Welcome to Snappy - The Super Neat Academic Profile Parser.py ~~~~~~")
     print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
 
+    # relative path for input/output files
+    # if user is in snappy/src directory, go up one level
+    cwd = os.getcwd()
+    if cwd.endswith("snappy/src"):
+        rel_path = "../user/"
+    elif cwd.endswith("snappy"):
+        rel_path = "./user/"
+    elif cwd.endswith("snappy/user"):
+        rel_path = "./"
+    else:
+        print(f"\n ERROR - Please run this script from within the 'snappy/user' directory.\n")
+        return
+    
+    # output file name
+    output_file = rel_path + "snappy_results.csv"
+
+    # test CSV and XLSX output before we go any further
+    print(f"\n Testing that I can open CSV output file '{output_file}' for writing...")
+    try:
+        with open(output_file, "w", newline="", encoding="utf-8") as f_out:
+            pass
+    except Exception as e:
+        print(
+            f" ERROR - Could not open output file '{output_file}' for writing.\n"
+            f" You probably have it open in another program."
+        )
+        print(f" Exception: {type(e).__name__}: {e}\n")
+        return
+
+    xlsx_file = output_file.replace(".csv", ".xlsx")
+    print(f" Testing that I can open Excel output file '{xlsx_file}' for writing...")
+    try:
+        with open(xlsx_file, "w", newline="", encoding="utf-8") as f_out:
+            pass
+    except Exception as e:
+        print(
+            f" ERROR - Could not open output file '{xlsx_file}' for writing.\n"
+            f" You probably have it open in another program."
+        )
+        print(f" Exception: {type(e).__name__}: {e}\n")
+        return
+
+    # confirm offline or fetch-only mode
+    if offline_mode:
+        print(" Running in OFFLINE mode (shhh!): I will not contact Google Scholar,")
+        print(" only parse HTML files already present in the 'html' directory.\n")
+    elif fetch_only_mode:
+        print(" Running in FETCH-ONLY mode: I will download and cache pages from Google Scholar, ")
+        print(" but will not parse or write to output files.\n")
+    else:
+        # give user option to run in offline mode
+        answer = input(
+            " Do you want to run in OFFLINE mode (parse cached HTML only)? (y/N): "
+        ).strip().lower()
+        if answer == "y":
+            offline_mode = True
+            print("\n Running in OFFLINE mode (shhh!): I will not contact Google Scholar,")
+            print(" only parse HTML files already present in the 'html' directory.\n")
+        if not offline_mode:
+            # give user option to run in fetch-only mode
+            answer = input(
+                " Do you want to run in FETCH-ONLY mode (download and cache pages only)? (y/N): "
+            ).strip().lower()
+            if answer == "y":
+                fetch_only_mode = True
+                print("\n Running in FETCH-ONLY mode: I will download and cache pages from Google Scholar, ")
+                print(" but will not parse or write to output files.\n")
+            
     # request HR report name
     hr_report_file = input(
         " Enter the name of the HR report file to process "
         "or press Enter for default ('Campaign_Application_Report.xlsx'):\n ~ "
     ) or "Campaign_Application_Report.xlsx"
+    
+    hr_report_file = rel_path + hr_report_file.strip()
     
     if not os.path.exists(hr_report_file):
         print(f" ERROR - {hr_report_file} not found in current directory.")
@@ -763,11 +1015,9 @@ def main():
         df_hr.to_csv(hr_csv_file, index=False)
         print(f" Converted HR report to CSV: {hr_csv_file}")
 
-
     except Exception as e:
         print(f" ERROR - Could not convert HR report to CSV. Exception: {type(e).__name__}: {e}")
         return
-        
         
     # rename columns to something manageable and without grammatical errors ... 
     df_hr = df_hr.rename(columns={
@@ -795,6 +1045,8 @@ def main():
         "or press Enter for default ('journal_list.txt'):\n ~ "
     ) or "journal_list.txt"
     
+    journal_list_file = rel_path + journal_list_file.strip()
+    
     if not os.path.exists(journal_list_file):
         print(f" Warning - {journal_list_file} not found. I will not count journal publications.")
         journal_list: List[str] = []
@@ -806,95 +1058,125 @@ def main():
             print(" Warning - No journal titles found. No journal counts will be recorded.")
         else:
             print(f" Loaded {len(journal_list)} journal titles from {journal_list_file}")
-            #for jt in journal_list:
-            #    print(f"       - {jt}")
 
     normalized_journal_titles = {
         normalize_journal_name(j): j
         for j in journal_list
     }
-    # output file name
-    output_file = "snappy_results.csv"
-
-    # test CSV output
-    print(f"\n Testing that I can open CSV output file '{output_file}' for writing...")
-    try:
-        with open(output_file, "w", newline="", encoding="utf-8") as f_out:
-            pass
-    except Exception as e:
-        print(
-            f" ERROR - Could not open output file '{output_file}' for writing.\n"
-            f" You probably have it open in another program."
-        )
-        print(f" Exception: {type(e).__name__}: {e}\n")
-        return
-
-    xlsx_file = output_file.replace(".csv", ".xlsx")
-    print(f" Testing that I can open Excel output file '{xlsx_file}' for writing...")
-    try:
-        with open(xlsx_file, "w", newline="", encoding="utf-8") as f_out:
-            pass
-    except Exception as e:
-        print(
-            f" ERROR - Could not open output file '{xlsx_file}' for writing.\n"
-            f" You probably have it open in another program."
-        )
-        print(f" Exception: {type(e).__name__}: {e}\n")
-        return
-
-    # html cacheing
-    html_dir = "./html"
+    
+    # html caching
+    html_dir = rel_path + "html"
     cache_html = False
 
-    print("\n Do you want to cache the raw HTML pages to the 'html' directory for debugging/offline use? (y/N): ", end="")
-    answer = input().strip().lower()
-    
-    if answer == "y":
+    if offline_mode:
+        # in offline mode we never write HTML, we just read from html_dir
+        os.makedirs(html_dir, exist_ok=True)
+        print(f" Offline mode: will use cached HTML pages under: {html_dir}")
+    else:
         cache_html = True
         os.makedirs(html_dir, exist_ok=True)
-        print(f" Will cache HTML pages under: {html_dir}")
+        print(f" Normal or Fetch-only mode: I will cache HTML pages under: {html_dir}")
+
+    # ask user to enter the candidate number to start on (default 1)
+    start_candidate_num_str = input("\n Enter the candidate number to start processing from (default 1):\n ~ ")
+    if not start_candidate_num_str.strip():
+        start_candidate_num = 1
     else:
-        print(" Not caching HTML pages.")
-        
-    # ask user if they wish to run in debug mode
-    print("\n Do you want to run in debug mode - just process first x applications? (x/n): ", end="")
-    answer = input().strip().lower()
+        try:
+            start_candidate_num = int(start_candidate_num_str.strip())
+        except ValueError:
+            print(" Invalid candidate number entered, defaulting to 1.")
+            start_candidate_num = 1
     
-    if not answer or answer.lower() == "n":
-        debug_mode = False
+    if start_candidate_num < 1 or start_candidate_num > len(df_hr):
+        print(f" Invalid candidate number {start_candidate_num}, must be between 1 and {len(df_hr)}. Defaulting to 1.")
+        start_candidate_num = 1
+    print(f" Starting processing from candidate number {start_candidate_num}...\n")
+    df_hr = df_hr.iloc[start_candidate_num - 1 :].reset_index(drop=True)
+    
+    # ask user to enter the candidate number to stop on (default last)
+    end_candidate_num_str = input(
+        f"\n Enter the candidate number to stop processing on (default {len(df_hr) + start_candidate_num - 1}):\n ~ "
+    )
+    if not end_candidate_num_str.strip():
+        end_candidate_num = len(df_hr) + start_candidate_num - 1
     else:
-        debug_mode = True
-        counter_limit = int(answer)
-
+        try:
+            end_candidate_num = int(end_candidate_num_str.strip())
+        except ValueError:
+            print(f" Invalid candidate number entered, defaulting to {len(df_hr) + start_candidate_num - 1}.")
+            end_candidate_num = len(df_hr) + start_candidate_num - 1
+    if end_candidate_num < start_candidate_num or end_candidate_num > (len(df_hr) + start_candidate_num - 1):
+        print(f" Invalid candidate number {end_candidate_num}, must be between {start_candidate_num} and {len(df_hr) + start_candidate_num - 1}.")
+        end_candidate_num = len(df_hr) + start_candidate_num - 1
+    print(f" Stopping processing on candidate number {end_candidate_num}...\n")
+    df_hr = df_hr.iloc[: end_candidate_num - start_candidate_num + 1].reset_index(drop=True)
+    
     # start scraping
-    print("\n Now scraping the web pages for key research metrics...")
-    print("\n ------------------------------------------")
+    print("\n Now scraping the web pages for key research metrics...\n")
+    print("\n ===============================================================================\n")
 
-    session = requests.Session()
+    session: Optional[requests.Session] = None
+    if not offline_mode:
+        session = requests.Session()
 
     records: List[Dict[str, object]] = []
     
-    counter = 0
     for candidate in df_hr.itertuples(index=False):
+        
+        if fetch_only_mode:
+            # just fetch and cache HTML, no parsing / records
+            if session is None:
+                print(" ERROR - Session is None in fetch-only mode. This should not happen.")
+                break
 
-        record = process_profile(
-            candidate,
-            journal_list,
-            normalized_journal_titles,
-            session,
-            pagesize=100,
-            cache_html=cache_html,
-            html_dir=html_dir,
-        )
-        if record is not None:
-            records.append(record)
-        counter += 1
-        if debug_mode and counter >= counter_limit:
-            print("\n Debug mode active - stopping after 10 profiles.")
-            break
+            fetch_and_cache_profile(
+                candidate=candidate,
+                session=session,
+                pagesize=100,
+                html_dir=html_dir,
+            )
+
+        else:
+            record = process_profile(
+                candidate,
+                journal_list,
+                normalized_journal_titles,
+                session,
+                pagesize=100,
+                cache_html=cache_html,
+                html_dir=html_dir,
+                offline=offline_mode,
+            )
+            if record is not None:
+                records.append(record)
+            else:
+                print(f" Warning - No record returned for candidate {candidate.candidate_id}.")
+                if BLOCKING_SUSPECTED:
+                    print(f"\n Stopping further processing due to suspected blocking by Google.")
+                    print(f" Please try again in an hour or two or use the cached html files. Bye!\n")
+                    print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
+                    break
+
+        # random delay between profiles to emulate human behaviour and reduce chance of blocking
+        if not offline_mode and not fetch_only_mode:
+            sleep_s = random.uniform(5.0, 12.0)
+            print(f" Random (human-like) delay for {sleep_s:.1f} seconds before next profile...")
+            time.sleep(sleep_s)
+        elif fetch_only_mode:
+            sleep_s = random.uniform(5.0, 12.0)
+            print(f" Random (human-like) delay {sleep_s:.1f} seconds before next fetch...")
+            time.sleep(sleep_s)
 
     if not records:
         print(" No records to write (no profiles scraped).")
+        return
+    
+    if fetch_only_mode:
+        print("\n Fetch-only mode complete.")
+        print(" Cached HTML files (if any) are in the 'html' directory.")
+        print(" You can now rerun Snappy with --offline to parse them without")
+        print(" contacting Google Scholar.\n")
         return
 
     # write results to CSV
@@ -919,15 +1201,15 @@ def main():
         "comments": "Comments",
         "recruiter_notes": "Recruiter Notes",
         # GS fields
-        "gs_name": "GS Name",
-        "gs_institution": "GS Institution",
-        "gs_research_areas": "GS Research Areas",
+        "gs_name": "Google Scholar Name",
+        "gs_institution": "Google Scholar Institution",
+        "gs_research_areas": "Google Scholar Research Areas",
         "citations_all": "Citations (All)",
         "citations_5y": "Citations (5y)",
         "h_index_all": "H-index (All)",
         "h_index_5y": "H-index (5y)",
         "article_count": "Total Number of Publications",
-        "journal_count_tot": "Total Journal Publications",
+        "journal_count_tot": "Total Number of Publications in Journal List",
     }
 
     for j in journal_list:
@@ -944,31 +1226,38 @@ def main():
     # convert CSV to Excel
     print("\n Converting CSV results to Excel format...")
     try:
-        df = pd.read_csv(output_file)
+        df = pd.read_csv(
+            output_file,
+            keep_default_na=False,  # important
+            na_values=[]            # important
+        )
         df.to_excel(xlsx_file, index=False)
         print(f" Excel file saved: {xlsx_file}")
+
     except Exception as e:
         print(f"\n ERROR - Could not convert CSV to Excel. Exception: {type(e).__name__}: {e}")
+
 
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print(f"\n All done! Wrote {len(records)} rows to {output_file} and {xlsx_file}.")
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
     # optional: step through URLs in default browser
-    print("\n Would you like to step through each of the URLs? (y/N): ", end="")
-    choice = input().strip().lower()
+    if not offline_mode:
+        print("\n Would you like to step through each of the URLs? (y/N): ", end="")
+        choice = input().strip().lower()
 
-    if choice == "y":
-        print("\n Stepping through each URL in your default web browser...")
-        urls = sanitize_urls(df_hr["Google Scholar Link"].dropna().astype(str).tolist())
-        for url in urls:
-            print(f"\n Opening URL: {url}")
-            opened = open_default_browser(url)
-            if not opened:
-                print(" Warning: Could not open browser. Stopping step-through.\n")
-                break
-            time.sleep(0.2)
-            input(" Press Enter to continue to the next URL...")
+        if choice == "y":
+            print("\n Stepping through each URL in your default web browser...")
+            urls = sanitize_urls(df_hr["Google Scholar Link"].dropna().astype(str).tolist())
+            for url in urls:
+                print(f"\n Opening URL: {url}")
+                opened = open_default_browser(url)
+                if not opened:
+                    print(" Warning: Could not open browser. Stopping step-through.\n")
+                    break
+                time.sleep(0.2)
+                input(" Press Enter to continue to the next URL...")
 
     print(f"\n All done! The results are in {output_file}. Bye!\n")
     print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
