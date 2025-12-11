@@ -25,7 +25,7 @@ BLOCKING_SUSPECTED = False
 
 class GSBlockedError(Exception):
     '''Raised when those Google yahoos appear to be blocking requests.'''
-    BLOCKING_SUSPECTED = True
+    pass
 
 # =========================
 # helper functions
@@ -362,8 +362,9 @@ def scrape_it(html: str,
             if matched_journal:
                 print(f" Journal match: '{raw_info}' -> '{matched_journal}'")
                 journal_match_counts[matched_journal] += 1
-                      
-    print(f" Total articles on this page: {article_count}")
+    global FETCH_ONLY_MODE
+    if not FETCH_ONLY_MODE:                  
+        print(f" Total articles on this page: {article_count}")
     #print(" Journal counts:")
     #for journal, count in journal_match_counts.items():
     #    print(f"  • {journal}: {count}")
@@ -501,19 +502,21 @@ def scrape_profile_all_publications_requests(
     if not any_page:
         print(f"\n Warning - No publication pages scraped for URL: {profile_url}")
         # likely blocked or unreachable
+        global BLOCKING_SUSPECTED
+        BLOCKING_SUSPECTED = True        
         raise GSBlockedError(f"Blocked or no pages for {profile_url}")
 
-    print("\n === Aggregated over ALL publications pages ===")
-    print(f" Name: {name}")
-    print(f" Institution: {institution}")
-    if research_areas:
-        print(" Research areas: " + ", ".join(research_areas))
-    print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
-    print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
-    #print(" Journal counts (all pages):")
-    #for j, c in total_journal_counts.items():
-    #    print(f"  • {j}: {c}")
-    print(f" Total articles (all pages): {total_article_count}")
+    global FETCH_ONLY_MODE
+    if not FETCH_ONLY_MODE:
+        print("\n === Aggregated over ALL publications pages ===")
+        print(f" Name: {name}")
+        print(f" Institution: {institution}")
+        if research_areas:
+            print(" Research areas: " + ", ".join(research_areas))
+        print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+        print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
+        print(f" Total articles (all pages): {total_article_count}")
+        
     print("\n ===============================================================================\n")
 
     return (
@@ -647,7 +650,8 @@ def fetch_and_cache_profile(
     url = candidate.gs_url
 
     if pd.isna(url):
-        print("  Warning - Empty Google Scholar Link, skipping profile.")
+        print("\n  Warning - Empty Google Scholar Link, skipping profile.\n")
+        print("\n ===============================================================================\n")
         return
 
     url_str = str(url).strip()
@@ -655,7 +659,8 @@ def fetch_and_cache_profile(
 
     sanitized = sanitize_url(url_str)
     if sanitized is None:
-        print("  Warning - Could not sanitize URL, skipping profile.")
+        print("\n  Warning - Could not sanitize URL, skipping profile.")
+        print("\n ===============================================================================\n")
         return
 
     # set up dummy journal list and normalized titles to satisfy function signature
@@ -696,7 +701,7 @@ def process_profile(
     url = candidate.gs_url
             
     if pd.isna(url):
-        print(" Warning - Empty Google Scholar Link, skipping profile.")
+        print("\n Warning - Empty Google Scholar Link, skipping profile.")
         record = empty_record( 
             candidate=candidate,
             journal_list=journal_list
@@ -707,7 +712,7 @@ def process_profile(
         
     url = sanitize_url(str(url).strip())
     if url is None:
-        print(" Warning - Could not sanitize URL, skipping profile.")
+        print("\n Warning - Could not sanitize URL, skipping profile.")
         record = empty_record( 
             candidate=candidate,
             journal_list=journal_list
@@ -759,9 +764,12 @@ def process_profile(
                 html_dir=html_dir,
             )
         except GSBlockedError as e:
+            global BLOCKING_SUSPECTED
+            BLOCKING_SUSPECTED = True
             print(f" Detected probable Google Scholar block while processing {url}.")
             print(f" Details: {e}")
             return empty_record(candidate=candidate, journal_list=journal_list)
+        
 
     if (
         gs_name is None
@@ -956,6 +964,10 @@ def main():
                 fetch_only_mode = True
                 print("\n Running in FETCH-ONLY mode: I will download and cache pages from Google Scholar, ")
                 print(" but will not parse or write to output files.\n")
+    
+    # set a global FETCH_ONLY_MODE flag
+    global FETCH_ONLY_MODE
+    FETCH_ONLY_MODE = fetch_only_mode
             
     # request HR report name
     hr_report_file = input(
@@ -1154,7 +1166,8 @@ def main():
                 print(f" Warning - No record returned for candidate {candidate.candidate_id}.")
                 if BLOCKING_SUSPECTED:
                     print(f"\n Stopping further processing due to suspected blocking by Google.")
-                    print(f" Please try again in an hour or two or use the cached html files. Bye!\n")
+                    print(f" Please try again in an hour or two or use the cached html files.")
+                    print(f" Note that you can restart from this candidate number next time. Bye!\n")
                     print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
                     break
 
@@ -1168,17 +1181,20 @@ def main():
             print(f" Random (human-like) delay {sleep_s:.1f} seconds before next fetch...")
             time.sleep(sleep_s)
 
-    if not records:
-        print(" No records to write (no profiles scraped).")
-        return
-    
     if fetch_only_mode:
-        print("\n Fetch-only mode complete.")
+        print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n") 
+        print(" Fetch-only mode complete.")
         print(" Cached HTML files (if any) are in the 'html' directory.")
-        print(" You can now rerun Snappy with --offline to parse them without")
-        print(" contacting Google Scholar.\n")
+        print(" You can now rerun Snappy with the --offline flag to parse them without contacting Google Scholar.\n")
+        print(" Bye!\n")       
+        print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
         return
 
+    if not records:
+        print(" No records to write (no profiles scraped). Bye!\n")
+        print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")        
+        return
+    
     # write results to CSV
     print(f"\n Writing records to CSV file: {output_file} ...")
     
@@ -1249,7 +1265,7 @@ def main():
 
         if choice == "y":
             print("\n Stepping through each URL in your default web browser...")
-            urls = sanitize_urls(df_hr["Google Scholar Link"].dropna().astype(str).tolist())
+            urls = sanitize_urls(df_hr["gs_url"].dropna().astype(str).tolist())
             for url in urls:
                 print(f"\n Opening URL: {url}")
                 opened = open_default_browser(url)
@@ -1258,6 +1274,7 @@ def main():
                     break
                 time.sleep(0.2)
                 input(" Press Enter to continue to the next URL...")
+
 
     print(f"\n All done! The results are in {output_file}. Bye!\n")
     print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
