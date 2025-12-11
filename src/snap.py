@@ -5,10 +5,16 @@ import webbrowser
 import time
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
-from typing import Optional, Tuple, List, Dict, Generator
+from typing import Optional, Tuple, List, Dict, Generator, Any
 import requests
 import pandas as pd
+from pandas.api.types import is_string_dtype
 from bs4 import BeautifulSoup
+import re
+import string
+
+PUNCT = str.maketrans("", "", string.punctuation)
+MAX_BLOCK_RETRIES_DEFAULT = 1
 
 # =========================
 # helper functions
@@ -40,6 +46,19 @@ def sanitize_urls(urls: List[str]) -> List[str]:
         else:
             print(f" Warning - Could not extract user id from URL: {url}, skipping.")
     return sanitized
+
+# =========================
+
+# sanitize a single URL to standard format in English!
+
+def sanitize_url(url: str) -> Optional[str]:
+    user_id = user_id_from_url(url)
+    if user_id:
+        sanitized_url = f"https://scholar.google.com/citations?user={user_id}&hl=en"
+        return sanitized_url
+    else:
+        print(f" Warning - Could not extract user id from URL: {url}. sanitize_url failed!")
+        return None
 
 # =========================
 
@@ -190,7 +209,10 @@ def iter_scholar_pages_requests(
 
 # I love BeautifulSoup :)~
 
-def scrape_it(html: str, journal_list: List[str]) -> Tuple[
+def scrape_it(html: str, 
+              journal_list: List[str], 
+              normalized_journal_titles: Dict[str, str]
+) -> Tuple[
     Optional[str],          # name
     Optional[str],          # institution
     List[str],              # research areas
@@ -324,19 +346,78 @@ def scrape_it(html: str, journal_list: List[str]) -> Tuple[
 
             article_count += 1
             
-            journal_info = gray_elems[1].get_text(strip=True).lower()
-            for journal in journal_list:
-                if journal.lower() in journal_info:
-                    print(f" Journal match: '{gray_elems[1].get_text(strip=True)}' -> '{journal}'")
-                    journal_match_counts[journal] += 1
-    
+            raw_info = gray_elems[1].get_text(strip=True)
+
+            # extract the journal title from the raw info string
+            journal_title = extract_journal_name(raw_info)
+
+            # remove punctuation and normalize
+            journal_norm = normalize_journal_name(journal_title)
+
+            # compare against normalized journal titles list
+            matched_journal = normalized_journal_titles.get(journal_norm)
+
+            if matched_journal:
+                print(f" Journal match: '{raw_info}' -> '{matched_journal}'")
+                journal_match_counts[matched_journal] += 1
+                      
     print(f" Total articles on this page: {article_count}")
-    print(" Journal counts:")
-    for journal, count in journal_match_counts.items():
-        print(f"  • {journal}: {count}")
-    print("\n ------------------------------------------")
+    #print(" Journal counts:")
+    #for journal, count in journal_match_counts.items():
+    #    print(f"  • {journal}: {count}")
+    print("\n ------------------------------------------\n")
 
     return name, institution, research_areas, h_all, h_5y, cit_all, cit_5y, journal_match_counts, article_count
+
+# ========================
+
+# clean journal name for matching
+
+def normalize_journal_name_old(name: str) -> str:
+
+    name = name.strip().lower()
+
+    # part before first comma 
+    name = name.split(",", 1)[0]
+
+    # remove trailing parenthetical suffix
+    name = re.sub(r"\s*\([^)]*\)\s*$", "", name)
+
+    # remove trailing volume numbers
+    name = re.sub(r"\s+\d+$", "", name)
+
+    # collapse multiple spaces
+    name = re.sub(r"\s+", " ", name)
+
+    return name
+
+# ========================
+
+# normalize a journal name by cleaning punctuation and whitespace
+
+def normalize_journal_name(name: str) -> str:
+    name = name.lower().strip()
+    # remove punctuation but keep spaces
+    name = name.translate(PUNCT)
+    # collapse multiple spaces
+    name = re.sub(r"\s+", " ", name)
+    return name
+
+# ========================
+
+# extract the journal name from the journal_info field
+
+def extract_journal_name(raw_info: str) -> str:
+
+    s = raw_info.strip()
+
+    # look for the first spot where a volume/pages/year chunk starts.
+    # this is usually: space + digit, or comma + space + digit, or space + '(' + digit
+    m = re.match(r"^(.*?)(?=\s\d|\s\(\d|,\s*\d{1,4})", s)
+    if m:
+        return m.group(1).strip()
+    return s  # fallback: whole string if no match
+
 
 # ========================
 
@@ -345,11 +426,12 @@ def scrape_it(html: str, journal_list: List[str]) -> Tuple[
 def scrape_profile_all_publications_requests(
     profile_url: str,
     journal_list: List[str],
+    normalized_journal_titles: Dict[str, str],
     session: requests.Session,
     pagesize: int = 100,
     max_pages: int = 50,
     delay: float = 1.0,
-    max_block_retries: int = 5,
+    max_block_retries: int = MAX_BLOCK_RETRIES_DEFAULT,
     block_backoff_base: float = 10.0,
     cache_html: bool = False,
     html_dir: str = "./user/html",
@@ -413,7 +495,7 @@ def scrape_profile_all_publications_requests(
             page_cit_5y,
             page_journal_counts,
             page_article_count,
-        ) = scrape_it(html, journal_list)
+        ) = scrape_it(html, journal_list, normalized_journal_titles)
 
         # extract profile-level info from the first page
         if page_idx == 0:
@@ -441,11 +523,11 @@ def scrape_profile_all_publications_requests(
         print(" Research areas: " + ", ".join(research_areas))
     print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
     print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
-    print(" Journal counts (all pages):")
-    for j, c in total_journal_counts.items():
-        print(f"  • {j}: {c}")
+    #print(" Journal counts (all pages):")
+    #for j, c in total_journal_counts.items():
+    #    print(f"  • {j}: {c}")
     print(f" Total articles (all pages): {total_article_count}")
-    print(" =============================================\n")
+    print("\n =============================================\n")
 
     return (
         name,
@@ -464,23 +546,46 @@ def scrape_profile_all_publications_requests(
 # main driver to process a profile
 
 def process_profile(
-    url: str,
+    candidate: tuple,
     journal_list: List[str],
+    normalized_journal_titles: Dict[str, str],
     session: requests.Session,
     pagesize: int = 100,
     cache_html: bool = False,
     html_dir: str = "./html",
 ) -> Dict[str, object] | None:
 
-    user_id = user_id_from_url(url)
-    if not user_id:
-        print(f" Warning - Could not extract user id from URL: {url}")
-        user_id = "UNKNOWN"
+    # debug print candidate
+    # print("\n Candidate data preview:")
+    # print(candidate)
 
+    print(f"\n === Processing profile for candidate {candidate.candidate_id}: {candidate.candidate_name} ===")
+    
+    url = candidate.gs_url
+            
+    if pd.isna(url):
+        print(" Warning - Empty Google Scholar Link, skipping profile.")
+        record = empty_record( 
+            candidate=candidate,
+            journal_list=journal_list
+        )
+        return record
+    
+    print(f" Attempting to scrape info from Google Scholar URL: {url}")
+        
+    url = sanitize_url(str(url).strip())
+    if url is None:
+        print(" Warning - Could not sanitize URL, skipping profile.")
+        record = empty_record( 
+            candidate=candidate,
+            journal_list=journal_list
+        )
+        return record
+    
     (
-        name,
-        institution,
-        research_areas,
+        gs_name,
+        gs_institution,
+        gs_research_areas,
         h_all,
         h_5y,
         cit_all,
@@ -490,6 +595,7 @@ def process_profile(
     ) = scrape_profile_all_publications_requests(
         url,
         journal_list,
+        normalized_journal_titles,
         session,
         pagesize=pagesize,
         cache_html=cache_html,
@@ -497,19 +603,31 @@ def process_profile(
     )
 
     if (
-        name is None
-        and institution is None
-        and not research_areas
+        gs_name is None
+        and gs_institution is None
+        and not gs_research_areas
         and all(v == 0 for v in journal_counts.values())
     ):
         print(f" Warning - No meaningful data scraped for URL: {url}")
-
+    
     record = {
-        "url": url,
-        "user_id": user_id,
-        "name": name or "",
-        "institution": institution or "",
-        "research_areas": "; ".join(research_areas) if research_areas else "",
+        "candidate_id": candidate.candidate_id,
+        "candidate_name": candidate.candidate_name,
+        "gender": candidate.gender,
+        "email": candidate.email,
+        "country": candidate.country,
+        "current_employee": candidate.current_employee,
+        "expertise_area": candidate.expertise_area,
+        "academic_level": candidate.academic_level,
+        "PhD_year": candidate.PhD_year,
+        "gs_url": url,  
+        "PhD_institution": candidate.PhD_institution,
+        "YNM": "",
+        "comments": "",
+        "recruiter_notes": "",        
+        "gs_name": gs_name or "",
+        "gs_institution": gs_institution or "",
+        "gs_research_areas": "; ".join(gs_research_areas) if gs_research_areas else "",
         "citations_all": cit_all if cit_all is not None else "",
         "citations_5y": cit_5y if cit_5y is not None else "",
         "h_index_all": h_all if h_all is not None else "",
@@ -521,6 +639,44 @@ def process_profile(
     for journal in journal_list:
         record[journal] = journal_counts.get(journal, 0)
 
+    return record
+
+# =========================
+
+# return an empty record for failed profiles
+def empty_record(
+    candidate: tuple, 
+    journal_list: List[str]
+) -> Dict[str, object]:
+   
+    print(f"\n Setting empty record <=========================================\n")
+    record = {
+        "candidate_id": candidate.candidate_id,
+        "candidate_name": candidate.candidate_name,
+        "gender": candidate.gender,
+        "email": candidate.email,
+        "country": candidate.country,
+        "current_employee": candidate.current_employee,
+        "expertise_area": candidate.expertise_area,
+        "academic_level": candidate.academic_level,
+        "PhD_year": candidate.PhD_year,
+        "gs_url": "not avail",           
+        "PhD_institution": candidate.PhD_institution,
+        "YNM": "",
+        "comments": "",
+        "recruiter_notes": "",     
+        "gs_name": "not avail",
+        "gs_institution": "not avail",
+        "gs_research_areas": "not avail",
+        "citations_all": "not avail",
+        "citations_5y": "not avail",
+        "h_index_all": "not avail",
+        "h_index_5y": "not avail",
+        "article_count": "not avail",
+        "journal_count_tot": "not avail",
+    }
+    for journal in journal_list:
+        record[journal] = "not avail"
     return record
 
 # =========================
@@ -551,49 +707,112 @@ def main():
     print(" ~~~~~~ Welcome to Snappy - The Super Neat Academic Profile Parser.py ~~~~~~")
     print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
 
-    # request URL list file name (default is URL_list.txt)
-    url_list_file = input(
-        " Enter the name of the file containing a list of Google Scholar URLs "
-        "or press Enter for default ('URL_list.txt'):\n ~ "
-    ) or "URL_list.txt"
-
-    url_list_file = url_list_file
+    # request HR report name
+    hr_report_file = input(
+        " Enter the name of the HR report file to process "
+        "or press Enter for default ('Campaign_Application_Report.xlsx'):\n ~ "
+    ) or "Campaign_Application_Report.xlsx"
     
-    if not os.path.exists(url_list_file):
-        print(f" ERROR - {url_list_file} not found in current directory.")
+    if not os.path.exists(hr_report_file):
+        print(f" ERROR - {hr_report_file} not found in current directory.")
+        return    
+    
+    # convert the report to CSV for easier processing
+    print(f"\n Extracting information from '{hr_report_file}' for processing...")
+    try:
+        df_hr = pd.read_excel(hr_report_file)
+
+        # remove the first two rows
+        df_hr = df_hr.iloc[1:].reset_index(drop=True)
+
+        # take the next row as header, clean its newlines, then set as columns
+        raw_header = df_hr.iloc[0]
+
+        # convert to string and strip/replace newlines
+        clean_header = (
+            raw_header
+            .astype(str)
+            .str.replace(r"[\r\n]+", " ", regex=True)
+            .str.strip()
+        )
+        
+        # print the header
+        print(" Detected HR report columns:")
+        for i, col in enumerate(clean_header):
+            print(f"  {i + 1:02d}. {col}")
+
+        # use this cleaned row as the header
+        df_hr = df_hr[1:].reset_index(drop=True)
+        df_hr.columns = clean_header
+
+        # also: just in case, clean any lingering newlines in column names
+        df_hr.columns = [
+            str(c).replace("\r", " ").replace("\n", " ").strip()
+            for c in df_hr.columns
+        ]
+
+        # clean up string-like columns to remove newline chars from cell values
+        for col in df_hr.columns:
+            if is_string_dtype(df_hr[col]):
+                df_hr[col] = df_hr[col].map(
+                    lambda x: x.replace("\r", " ").replace("\n", " ")
+                    if isinstance(x, str) else x
+                )
+
+        hr_csv_file = hr_report_file.replace(".xlsx", ".csv")
+        df_hr.to_csv(hr_csv_file, index=False)
+        print(f" Converted HR report to CSV: {hr_csv_file}")
+
+
+    except Exception as e:
+        print(f" ERROR - Could not convert HR report to CSV. Exception: {type(e).__name__}: {e}")
         return
-
-    with open(url_list_file, "r", encoding="utf-8") as f:
-        urls = [line.strip() for line in f if line.strip()]
-
-    urls = sanitize_urls(urls)
-
-    if not urls:
-        print(" No valid URLs found.")
-        return
+        
+        
+    # rename columns to something manageable and without grammatical errors ... 
+    df_hr = df_hr.rename(columns={
+        "Candidate Name": "candidate_name",
+        "Candidate": "candidate_id",
+        "Gender": "gender",
+        "Email Address": "email",
+        "In what country do you currently reside in?": "country",
+        "Are you a student or current employee?": "current_employee",
+        "What is your area of expertise?": "expertise_area",
+        "What is the Academic Level you are applying for?": "academic_level",
+        "Which year did you obtain your PhD? (YYYY)(Required if you have completed a PhD)": "PhD_year",
+        "Which Institution did you obtain your PhD from?": "PhD_institution",
+        "Google Scholar Link": "gs_url",
+        "Would you like to longlist/Shortlist this candidate? Y= Yes M = Maybe N =No": "YNM",
+        "Comments": "comments",
+        "Recruiter Notes": "recruiter_notes",
+    })
+   
+    print("\n ------------------------------------------\n")
 
     # read list of key journal names
     journal_list_file = input(
         " Enter the name of the file containing a list of journal names of interest "
         "or press Enter for default ('journal_list.txt'):\n ~ "
     ) or "journal_list.txt"
-
-    journal_list_file = journal_list_file
     
     if not os.path.exists(journal_list_file):
         print(f" Warning - {journal_list_file} not found. I will not count journal publications.")
-        journal_titles: List[str] = []
+        journal_list: List[str] = []
     else:
         with open(journal_list_file, "r", encoding="utf-8") as f:
-            journal_titles = [line.strip() for line in f if line.strip()]
+            journal_list = [line.strip() for line in f if line.strip()]
 
-        if not journal_titles:
+        if not journal_list:
             print(" Warning - No journal titles found. No journal counts will be recorded.")
         else:
-            print(f" Loaded {len(journal_titles)} journal titles from {journal_list_file}")
-            for jt in journal_titles:
-                print(f"       - {jt}")
+            print(f" Loaded {len(journal_list)} journal titles from {journal_list_file}")
+            #for jt in journal_list:
+            #    print(f"       - {jt}")
 
+    normalized_journal_titles = {
+        normalize_journal_name(j): j
+        for j in journal_list
+    }
     # output file name
     output_file = "snappy_results.csv"
 
@@ -627,14 +846,25 @@ def main():
     html_dir = "./html"
     cache_html = False
 
-    print("\n Do you want to cache the raw HTML pages to the 'html' directory for debugging/offline use? (y/n): ", end="")
+    print("\n Do you want to cache the raw HTML pages to the 'html' directory for debugging/offline use? (y/N): ", end="")
     answer = input().strip().lower()
+    
     if answer == "y":
         cache_html = True
         os.makedirs(html_dir, exist_ok=True)
         print(f" Will cache HTML pages under: {html_dir}")
     else:
         print(" Not caching HTML pages.")
+        
+    # ask user if they wish to run in debug mode
+    print("\n Do you want to run in debug mode - just process first x applications? (x/n): ", end="")
+    answer = input().strip().lower()
+    
+    if not answer or answer.lower() == "n":
+        debug_mode = False
+    else:
+        debug_mode = True
+        counter_limit = int(answer)
 
     # start scraping
     print("\n Now scraping the web pages for key research metrics...")
@@ -642,48 +872,56 @@ def main():
 
     session = requests.Session()
 
-    results: List[Dict[str, object]] = []
-    for url in urls:
-        print(f"\n === Processing profile: {url} ===")
+    records: List[Dict[str, object]] = []
+    
+    counter = 0
+    for candidate in df_hr.itertuples(index=False):
+
         record = process_profile(
-            url,
-            journal_titles,
+            candidate,
+            journal_list,
+            normalized_journal_titles,
             session,
             pagesize=100,
             cache_html=cache_html,
             html_dir=html_dir,
         )
         if record is not None:
-            results.append(record)
+            records.append(record)
+        counter += 1
+        if debug_mode and counter >= counter_limit:
+            print("\n Debug mode active - stopping after 10 profiles.")
+            break
 
-
-    if not results:
-        print(" No results to write (no profiles scraped).")
+    if not records:
+        print(" No records to write (no profiles scraped).")
         return
 
     # write results to CSV
-    print(f"\n Writing results to CSV file: {output_file} ...")
-
-    fieldnames = [
-        "url",
-        "user_id",
-        "name",
-        "institution",
-        "research_areas",
-        "citations_all",
-        "citations_5y",
-        "h_index_all",
-        "h_index_5y",
-        "article_count",
-        "journal_count_tot",
-    ] + journal_titles
+    print(f"\n Writing records to CSV file: {output_file} ...")
+    
+    fieldnames = list(records[0].keys()) + journal_list
 
     column_labels: Dict[str, str] = {
-        "url": "URL",
-        "user_id": "Scholar ID",
-        "name": "Name",
-        "institution": "Institution",
-        "research_areas": "Research Areas",
+        # HR fields
+        "candidate_id": "Candidate ID",
+        "candidate_name": "Candidate Name",
+        "gender": "Gender",
+        "email": "Email Address",
+        "country": "Country of Residence",
+        "current_employee": "Current Employee / Student",
+        "expertise_area": "Expertise Area",
+        "academic_level": "Academic Level Applied For",
+        "PhD_year": "PhD Completion Year",
+        "gs_url": "Google Scholar URL",        # this is the sanitized URL
+        "PhD_institution": "PhD Institution",
+        "YNM": "Longlist/Shortlist (Yes/No/Maybe)",
+        "comments": "Comments",
+        "recruiter_notes": "Recruiter Notes",
+        # GS fields
+        "gs_name": "GS Name",
+        "gs_institution": "GS Institution",
+        "gs_research_areas": "GS Research Areas",
         "citations_all": "Citations (All)",
         "citations_5y": "Citations (5y)",
         "h_index_all": "H-index (All)",
@@ -692,7 +930,7 @@ def main():
         "journal_count_tot": "Total Journal Publications",
     }
 
-    for j in journal_titles:
+    for j in journal_list:
         column_labels[j] = f"Publications in {j}"
 
     pretty_headers = [column_labels[col] for col in fieldnames]
@@ -700,7 +938,7 @@ def main():
     with open(output_file, "w", newline="", encoding="utf-8") as f_out:
         writer = csv.writer(f_out)
         writer.writerow(pretty_headers)
-        for row in results:
+        for row in records:
             writer.writerow([row.get(col, "") for col in fieldnames])
 
     # convert CSV to Excel
@@ -713,15 +951,16 @@ def main():
         print(f"\n ERROR - Could not convert CSV to Excel. Exception: {type(e).__name__}: {e}")
 
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    print(f"\n All done! Wrote {len(results)} rows to {output_file} and {xlsx_file}.")
+    print(f"\n All done! Wrote {len(records)} rows to {output_file} and {xlsx_file}.")
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
     # optional: step through URLs in default browser
-    print("\n Would you like to step through each of the URLs? (y/n): ", end="")
+    print("\n Would you like to step through each of the URLs? (y/N): ", end="")
     choice = input().strip().lower()
 
     if choice == "y":
         print("\n Stepping through each URL in your default web browser...")
+        urls = sanitize_urls(df_hr["Google Scholar Link"].dropna().astype(str).tolist())
         for url in urls:
             print(f"\n Opening URL: {url}")
             opened = open_default_browser(url)
