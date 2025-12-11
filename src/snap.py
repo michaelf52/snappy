@@ -3,29 +3,20 @@ import os
 import csv
 import webbrowser
 import time
-import pandas as pd
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
-from selenium import webdriver
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.service import Service
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+from typing import Optional, Tuple, List, Dict, Generator
+import requests
+import pandas as pd
 from bs4 import BeautifulSoup
-from typing import Optional, Tuple
 
-SAVE_PAGE_COUNTER = 0
-
-# ========================= 
+# =========================
 # helper functions
 # =========================
 
+# extract user_id from URL
 
-# extract user id from URL
-
-def user_id_from_url(url: str) -> str | None:
+def user_id_from_url(url: str) -> Optional[str]:
 
     parsed = urlparse(url)
     qs = parse_qs(parsed.query)
@@ -34,107 +25,172 @@ def user_id_from_url(url: str) -> str | None:
         return user_vals[0]
     return None
 
-# =======================
+# =========================
 
-# sanitize URLs
+# sanitize list of URLs to standard format in English!
 
-def sanitize_urls(urls: list[str]) -> list[str]:
-    sanitized = []
+def sanitize_urls(urls: List[str]) -> List[str]:
+
+    sanitized: List[str] = []
     for url in urls:
         user_id = user_id_from_url(url)
         if user_id:
-            sanitized_url = f"https://scholar.google.com/citations?user={user_id}"
+            sanitized_url = f"https://scholar.google.com/citations?user={user_id}&hl=en"
             sanitized.append(sanitized_url)
         else:
             print(f" Warning - Could not extract user id from URL: {url}, skipping.")
     return sanitized
 
-# =======================
+# =========================
 
-# save the page
+# deal with GS blocking and CAPTCHA and other antics
 
-def save_page(
-    url: str,
-    html_dir: str,
-    driver: webdriver.Chrome,
-    timeout: int = 10,
-    max_retries: int = 5,
-) -> str | None:
+def looks_like_block_page(html: str) -> bool:
 
-    global SAVE_PAGE_COUNTER
-    SAVE_PAGE_COUNTER += 1
-    out_dir = Path(html_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+    text = html.lower()
+    block_markers = [
+        "unusual traffic",
+        "/sorry/",
+        "not a robot",
+        "solve the captcha",
+        "submit a verification",
+        "our systems have detected",
+        "scholar help",
+    ]
 
-    # derive user_id from the URL (fallback if pattern not found)
-    if "user=" in url:
-        user_id = url.split("user=")[-1].split("&")[0]
-    else:
-        # alternative fallback
-        user_id = url.rstrip("/").split("/")[-1]
+    if "captcha" in text:
+        return True
 
-    out_path = out_dir / f"{user_id}.htm"
+    return any(marker in text for marker in block_markers)
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            print(f"\n Profile #{SAVE_PAGE_COUNTER} - Attempt {attempt}/{max_retries} for {url}")
-            driver.get(url)
+# =========================
 
-            # wait for the page to be "ready"
-            WebDriverWait(driver, timeout).until(
-                lambda d: d.execute_script("return document.readyState") == "complete"
-            )
+# get the list_works URL using cstart/pagesize params
 
-            # wait for an element to ensure page loaded
-            # profile name: <div id="gsc_prf_in">Name</div>
+def build_list_works_url(base_url: str, cstart: int, pagesize: int = 100) -> str:
+
+    parsed = urlparse(base_url)
+    qs = parse_qs(parsed.query)
+
+    # make sure key params are present; add/override view_op, cstart, pagesize
+    qs["view_op"] = ["list_works"]
+    qs["cstart"] = [str(cstart)]
+    qs["pagesize"] = [str(pagesize)]
+
+    new_query = urlencode(qs, doseq=True)
+    new_parsed = parsed._replace(query=new_query)
+    return urlunparse(new_parsed)
+
+# =========================
+
+# step through pages with requests
+
+def iter_scholar_pages_requests(
+    base_url: str,
+    session: requests.Session,
+    pagesize: int = 100,
+    max_pages: int = 50,
+    delay: float = 1.0,              # normal delay between successful pages
+    max_block_retries: int = 5,      # how many times to retry a blocked page
+    block_backoff_base: float = 10.0 # starting backoff in seconds
+) -> Generator[str, None, None]:
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0 Safari/537.36"
+        )
+    }
+
+    cstart = 0
+    page_index = 0
+
+    while page_index < max_pages:
+        url = build_list_works_url(base_url, cstart=cstart, pagesize=pagesize)
+        print(f"\n Loading publications page {page_index + 1} (cstart={cstart})")
+
+        block_attempts = 0
+
+        while True:
             try:
-                WebDriverWait(driver, timeout).until(
-                    EC.presence_of_element_located((By.ID, "gsc_prf_in"))
-                )
-            except TimeoutException:
-                print(" Warning - Did not find #gsc_prf_in, continuing anyway.")
-
-            # small delay to let JS finish populating tables
-            time.sleep(1.0)
-
-            page_source = driver.page_source or ""
-
-            # sanity checks on page source
-            if len(page_source) < 2000 or "<html" not in page_source.lower():
-                print(" Warning - Page source looks very small or malformed, retrying...")
+                resp = session.get(url, headers=headers, timeout=15)
+            except requests.RequestException as e:
+                print(f"  Error: request exception {type(e).__name__}: {e}")
+                block_attempts += 1
+                if block_attempts > max_block_retries:
+                    print("  Too many request failures for this page, giving up.")
+                    return
+                backoff = block_backoff_base * (2 ** (block_attempts - 1))
+                print(f"  Backing off for {backoff:.1f} seconds before retrying...")
+                time.sleep(backoff)
                 continue
 
-            # GS-specific sanity check
-            if "gsc_rsb_st" not in page_source and "gsc_a_t" not in page_source:
-                print(" Warning - expected page elements not found, may be a blocker page (e.g. CAPTCHA).")
+            # deal with status-based blocking
+            if resp.status_code in (429, 503):
+                block_attempts += 1
+                print(f"  HTTP {resp.status_code} suggests rate limiting or temporary block.")
+                if block_attempts > max_block_retries:
+                    print("  Too many block responses, stopping pagination.")
+                    return
+                backoff = block_backoff_base * (2 ** (block_attempts - 1))
+                print(f"  Backing off for {backoff:.1f} seconds before retrying...")
+                time.sleep(backoff)
                 continue
 
-            # write file
-            with open(out_path, "w", encoding="utf-8", errors="replace") as f:
-                f.write(page_source)
+            if resp.status_code != 200:
+                print(f"  Error: HTTP {resp.status_code}, stopping.")
+                return
 
-            print(f" Saved HTML to: {out_path}")
-            return str(out_path)
+            html = resp.text
 
-        except (TimeoutException, WebDriverException) as e:
-            print(f" ERROR - Exception during load: {type(e).__name__}: {e}")
-            if attempt < max_retries:
-                print(" Retrying ...")
-                time.sleep(2)
-            else:
-                print(" Giving up after max retries.")
+            # check for CAPTCHA / unusual traffic page
+            if looks_like_block_page(html):
+                block_attempts += 1
+                print("  Page looks like a CAPTCHA / 'unusual traffic' block.")
+                if block_attempts > max_block_retries:
+                    print("  Too many block-like responses, stopping pagination.")
+                    return
+                backoff = block_backoff_base * (2 ** (block_attempts - 1))
+                print(f"  Backing off for {backoff:.1f} seconds then retrying this page...")
+                time.sleep(backoff)
+                continue
 
-    return None
+            # woohoo - we have a page
+            break
 
+        # sanity check - parse the publications table to see if we have rows
+        
+        soup = BeautifulSoup(html, "html.parser")
+        table_pubs = soup.find("table", id="gsc_a_t")
+        if not table_pubs:
+            print("  No publications table found, stopping.")
+            return
 
-# =======================
+        rows = table_pubs.find_all("tr", class_="gsc_a_tr")
+        if not rows:
+            print("  No publication rows found, stopping.")
+            return
 
-# beautiful soup scraper 
+        print(f"  Found {len(rows)} publication rows on this page.")
+        yield html
 
-from typing import Optional, Tuple, List
-from bs4 import BeautifulSoup
+        # if we have fewer rows than pagesize then this is the last page
+        if len(rows) < pagesize:
+            print("  Last page detected (fewer than pagesize rows).")
+            return
 
-def scrape_it(html: str, journal_list: list[str]) -> Tuple[
+        cstart += pagesize
+        page_index += 1
+
+        # add another delay between pages just to avoid looking like a bot 
+        time.sleep(delay)
+
+# =========================
+
+# I love BeautifulSoup :)~
+
+def scrape_it(html: str, journal_list: List[str]) -> Tuple[
     Optional[str],          # name
     Optional[str],          # institution
     List[str],              # research areas
@@ -142,38 +198,34 @@ def scrape_it(html: str, journal_list: list[str]) -> Tuple[
     Optional[int],          # h_5y
     Optional[int],          # cit_all
     Optional[int],          # cit_5y
-    dict                    # journal_match_counts
+    Dict[str, int]          # journal_match_counts
 ]:
     soup = BeautifulSoup(html, "html.parser")
 
     # ---------------------------------------------------------------------
-    # name: <div id="gsc_prf_in">name</div>
+    # name tag: <div id="gsc_prf_in">Name</div>
     # ---------------------------------------------------------------------
     name = None
     name_div = soup.find("div", id="gsc_prf_in")
     if name_div:
         name = name_div.get_text(strip=True)
     if name:
-        print(f"\nScraping profile for '{name}'")
+        print(f"\n Scraping profile for '{name}'")
     else:
-        print("\nScraping profile for 'UNKNOWN'")
+        print("\n Scraping profile for 'UNKNOWN'")
 
     # ---------------------------------------------------------------------
-    # institution / affiliation:
-    #   <div class="gsc_prf_il">The University of X</div>
-    #   (first such div is usually the affiliation)
+    # institution / affiliation tag:
+    #   <div class="gsc_prf_il">The University of Excellence and other Buzzwords</div>
     # ---------------------------------------------------------------------
     institution: Optional[str] = None
     inst_divs = soup.find_all("div", class_="gsc_prf_il")
     if inst_divs:
         institution = inst_divs[0].get_text(strip=True)
-    if institution:
-        print(f"Institution: {institution}")
-    else:
-        print("Institution: None found")
+    print(f" Institution: {institution if institution else 'None found'}")
 
     # ---------------------------------------------------------------------
-    # research areas / interests:
+    # research areas / interests tags:
     #   <div id="gsc_prf_int">
     #       <a class="gsc_prf_inta">Area 1</a>
     #       <a class="gsc_prf_inta">Area 2</a>
@@ -187,12 +239,12 @@ def scrape_it(html: str, journal_list: list[str]) -> Tuple[
             if text:
                 research_areas.append(text)
     if research_areas:
-        print("Research areas: " + ", ".join(research_areas))
+        print(" Research areas: " + ", ".join(research_areas))
     else:
-        print("Research areas: None found")
-        
+        print(" Research areas: None found")
+
     # ---------------------------------------------------------------------
-    # h-index and citations table:
+    # h-index and citations table tags:
     # <table id="gsc_rsb_st">
     #   rows for "Citations", "h-index", "i10-index"
     #   columns: [label, All, Since YYYY]
@@ -243,14 +295,16 @@ def scrape_it(html: str, journal_list: list[str]) -> Tuple[
                     except ValueError:
                         h_5y = None
 
-    print(f"h-index (all): {h_all}, h-index (5y): {h_5y}")
-    print(f"citations (all): {cit_all}, citations (5y): {cit_5y}")
+    print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+    print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
 
     # ---------------------------------------------------------------------
     # journal matching in publications table
     # <table id="gsc_a_t">...</table>
     # ---------------------------------------------------------------------
-    journal_match_counts = {journal: 0 for journal in journal_list}
+    journal_match_counts: Dict[str, int] = {journal: 0 for journal in journal_list}
+    
+    article_count = 0
 
     table_pubs = soup.find("table", id="gsc_a_t")
     if table_pubs and journal_list:
@@ -268,263 +322,363 @@ def scrape_it(html: str, journal_list: list[str]) -> Tuple[
             if len(gray_elems) < 2:
                 continue
 
+            article_count += 1
+            
             journal_info = gray_elems[1].get_text(strip=True).lower()
             for journal in journal_list:
                 if journal.lower() in journal_info:
-                    print(f"Journal match: '{gray_elems[1].get_text(strip=True)}' -> '{journal}'")
+                    print(f" Journal match: '{gray_elems[1].get_text(strip=True)}' -> '{journal}'")
                     journal_match_counts[journal] += 1
-
-    print("Journal counts:")
+    
+    print(f" Total articles on this page: {article_count}")
+    print(" Journal counts:")
     for journal, count in journal_match_counts.items():
         print(f"  • {journal}: {count}")
-    print("\n------------------------------------------")
+    print("\n ------------------------------------------")
 
-    return name, institution, research_areas, h_all, h_5y, cit_all, cit_5y, journal_match_counts
+    return name, institution, research_areas, h_all, h_5y, cit_all, cit_5y, journal_match_counts, article_count
 
+# ========================
 
-# =======================
+# step through all GS pages and scrape profile info
 
-# process a profile
+def scrape_profile_all_publications_requests(
+    profile_url: str,
+    journal_list: List[str],
+    session: requests.Session,
+    pagesize: int = 100,
+    max_pages: int = 50,
+    delay: float = 1.0,
+    max_block_retries: int = 5,
+    block_backoff_base: float = 10.0,
+    cache_html: bool = False,
+    html_dir: str = "./user/html",
+) -> Tuple[
+    Optional[str],          # name
+    Optional[str],          # institution
+    List[str],              # research_areas
+    Optional[int],          # h_all
+    Optional[int],          # h_5y
+    Optional[int],          # cit_all
+    Optional[int],          # cit_5y
+    Dict[str, int],         # total journal_match_counts across all pages
+]:
 
-def process_profile(url: str, journal_list: dir, html_dir: str = "./html"):
+    name: Optional[str] = None
+    institution: Optional[str] = None
+    research_areas: List[str] = []
+    h_all: Optional[int] = None
+    h_5y: Optional[int] = None
+    cit_all: Optional[int] = None
+    cit_5y: Optional[int] = None
+
+    total_journal_counts: Dict[str, int] = {j: 0 for j in journal_list}
+    total_article_count = 0
+
+    any_page = False
+    user_id = user_id_from_url(profile_url) or "UNKNOWN"
+
+    # set up cache directory if needed
+    if cache_html:
+        out_dir = Path(html_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+    for page_idx, html in enumerate(
+        iter_scholar_pages_requests(
+            profile_url,
+            session,
+            pagesize=pagesize,
+            max_pages=max_pages,
+            delay=delay,
+            max_block_retries=max_block_retries,
+            block_backoff_base=block_backoff_base,
+        )
+    ):
+        any_page = True
+
+        if cache_html:
+            page_num = page_idx + 1
+            out_path = Path(html_dir) / f"{user_id}_p{page_num}.htm"
+            with open(out_path, "w", encoding="utf-8", errors="replace") as f:
+                f.write(html)
+            print(f"  Cached HTML for {user_id} page {page_num} -> {out_path}")
+
+        (
+            page_name,
+            page_institution,
+            page_research_areas,
+            page_h_all,
+            page_h_5y,
+            page_cit_all,
+            page_cit_5y,
+            page_journal_counts,
+            page_article_count,
+        ) = scrape_it(html, journal_list)
+
+        # extract profile-level info from the first page
+        if page_idx == 0:
+            name = page_name
+            institution = page_institution
+            research_areas = page_research_areas
+            h_all = page_h_all
+            h_5y = page_h_5y
+            cit_all = page_cit_all
+            cit_5y = page_cit_5y
+
+        # accumulate journal counts and article counts
+        for j in journal_list:
+            total_journal_counts[j] += page_journal_counts.get(j, 0)
+
+        total_article_count += page_article_count
+        
+    if not any_page:
+        print(f"\n Warning - No publication pages scraped for URL: {profile_url}")
+
+    print("\n === Aggregated over ALL publications pages ===")
+    print(f" Name: {name}")
+    print(f" Institution: {institution}")
+    if research_areas:
+        print(" Research areas: " + ", ".join(research_areas))
+    print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+    print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
+    print(" Journal counts (all pages):")
+    for j, c in total_journal_counts.items():
+        print(f"  • {j}: {c}")
+    print(f" Total articles (all pages): {total_article_count}")
+    print(" =============================================\n")
+
+    return (
+        name,
+        institution,
+        research_areas,
+        h_all,
+        h_5y,
+        cit_all,
+        cit_5y,
+        total_journal_counts,
+        total_article_count
+    )
+
+# =========================
+
+# main driver to process a profile
+
+def process_profile(
+    url: str,
+    journal_list: List[str],
+    session: requests.Session,
+    pagesize: int = 100,
+    cache_html: bool = False,
+    html_dir: str = "./html",
+) -> Dict[str, object] | None:
 
     user_id = user_id_from_url(url)
     if not user_id:
         print(f" Warning - Could not extract user id from URL: {url}")
         user_id = "UNKNOWN"
 
-    html_path = os.path.join(html_dir, f"{user_id}.htm")
-    if not os.path.exists(html_path):
-        print(f" Warning - HTML file not found for user_id={user_id}, expected: {html_path}")
-        return None
+    (
+        name,
+        institution,
+        research_areas,
+        h_all,
+        h_5y,
+        cit_all,
+        cit_5y,
+        journal_counts,
+        article_count,
+    ) = scrape_profile_all_publications_requests(
+        url,
+        journal_list,
+        session,
+        pagesize=pagesize,
+        cache_html=cache_html,
+        html_dir=html_dir,
+    )
 
-    with open(html_path, "r", encoding="utf-8") as f:
-        html = f.read()
+    if (
+        name is None
+        and institution is None
+        and not research_areas
+        and all(v == 0 for v in journal_counts.values())
+    ):
+        print(f" Warning - No meaningful data scraped for URL: {url}")
 
-    # call the scraper
-    name, institution, research_areas, h_all, h_5y, cit_all, cit_5y, journal_match_counts = scrape_it(html, journal_list) 
-
-    record =  {
+    record = {
         "url": url,
         "user_id": user_id,
-        "name": name if name is not None else "",
-        "institution": institution if institution is not None else "",
+        "name": name or "",
+        "institution": institution or "",
         "research_areas": "; ".join(research_areas) if research_areas else "",
         "citations_all": cit_all if cit_all is not None else "",
         "citations_5y": cit_5y if cit_5y is not None else "",
         "h_index_all": h_all if h_all is not None else "",
         "h_index_5y": h_5y if h_5y is not None else "",
+        "article_count": article_count if article_count is not None else "",
     }
-    
-    # calculate the total number of journal matches
-    record["journal_count_tot"] = sum(journal_match_counts.values())
-    
+
+    record["journal_count_tot"] = sum(journal_counts.values())
     for journal in journal_list:
-        record[journal] = journal_match_counts.get(journal, 0)
-    
+        record[journal] = journal_counts.get(journal, 0)
+
     return record
 
-# initialize webdriver 
+# =========================
 
-def get_driver(headless=True) -> webdriver.Chrome | None:
-    print(" Checking/initialising Chrome WebDriver...")
+# open default web browser to a URL
 
+def open_default_browser(url: str = "https://www.google.com") -> bool:
     try:
-        # Chrome options
-        options = webdriver.ChromeOptions()
-        if headless:
-            options.add_argument("--headless=new")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")
-
-        # use cached driver if available; installs only when needed
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=options)
-
-        print(" Chrome WebDriver initialised successfully.")
-        return driver
-
-    except Exception as e:
-        print(" ERROR - Failed to start Chrome WebDriver.")
-        print(f" Exception: {type(e).__name__}: {e}")   
-        print("Try manually installing ChromeDriver matching your Chrome version:")
-
-        return None
-
-# =========== 
-
-# open default browser
-
-def open_default_browser(url: str = "www.google.com") -> bool:
-
-    try:
-        opened = webbrowser.open(url, new=2)  #
+        opened = webbrowser.open(url, new=2)
         if opened:
             print(f" Opened default browser with URL: {url}")
             return True
         else:
             print(f" Warning - Browser did not open URL: {url}")
             return False
-
     except Exception as e:
         print(" ERROR - Failed to open the default web browser.")
         print(f" Exception: {type(e).__name__}: {e}")
         return False
 
-# =====================================================
 
+# =========================
 # main
+# =========================
 
 def main():
-    
-    print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~" )    
-    print(" ~~~~~~ Welcome to Snapppy - The Super Neat Academic Profile Parser.py ~~~~~~" )
-    print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n" )
+    print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+    print(" ~~~~~~ Welcome to Snappy - The Super Neat Academic Profile Parser.py ~~~~~~")
+    print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
 
     # request URL list file name (default is URL_list.txt)
     url_list_file = input(
         " Enter the name of the file containing a list of Google Scholar URLs "
         "or press Enter for default ('URL_list.txt'):\n ~ "
     ) or "URL_list.txt"
+
+    url_list_file = url_list_file
     
-    # read URL list
     if not os.path.exists(url_list_file):
         print(f" ERROR - {url_list_file} not found in current directory.")
         return
-        
+
     with open(url_list_file, "r", encoding="utf-8") as f:
         urls = [line.strip() for line in f if line.strip()]
-        
-    # sanitize URLs - this converts foreign language versions to standard English URLs
+
     urls = sanitize_urls(urls)
 
     if not urls:
-        print(" No URLs found in URL_list.txt.")
+        print(" No valid URLs found.")
         return
-        
-    # read list of key journal names that are of interest
-    # the number of publications in these journals will be counted for each profile
+
+    # read list of key journal names
     journal_list_file = input(
         " Enter the name of the file containing a list of journal names of interest "
         "or press Enter for default ('journal_list.txt'):\n ~ "
     ) or "journal_list.txt"
+
+    journal_list_file = journal_list_file
     
     if not os.path.exists(journal_list_file):
-        print(f" Warning - {journal_list_file} not found in current directory. I will not count journal publications.")
-        journal_titles = []
+        print(f" Warning - {journal_list_file} not found. I will not count journal publications.")
+        journal_titles: List[str] = []
     else:
         with open(journal_list_file, "r", encoding="utf-8") as f:
             journal_titles = [line.strip() for line in f if line.strip()]
-            
+
         if not journal_titles:
-            print(" Warning - No journal titles found in journal_list.txt. This is okay, but no journal counts will be recorded.")
+            print(" Warning - No journal titles found. No journal counts will be recorded.")
         else:
             print(f" Loaded {len(journal_titles)} journal titles from {journal_list_file}")
             for jt in journal_titles:
                 print(f"       - {jt}")
-                
+
     # output file name
-    output_file = "snapppy_results.csv"    
-    
-    # do a test that the output file can be opened for writing
-    print(f" Testing that I can open CSV output file '{output_file}' for writing...")
+    output_file = "snappy_results.csv"
+
+    # test CSV output
+    print(f"\n Testing that I can open CSV output file '{output_file}' for writing...")
     try:
         with open(output_file, "w", newline="", encoding="utf-8") as f_out:
             pass
     except Exception as e:
-        print(f" ERROR - Could not open output file '{output_file}' for writing. \n You probably have it open in another program.")
+        print(
+            f" ERROR - Could not open output file '{output_file}' for writing.\n"
+            f" You probably have it open in another program."
+        )
         print(f" Exception: {type(e).__name__}: {e}\n")
-        return       
-    
+        return
+
     xlsx_file = output_file.replace(".csv", ".xlsx")
     print(f" Testing that I can open Excel output file '{xlsx_file}' for writing...")
     try:
         with open(xlsx_file, "w", newline="", encoding="utf-8") as f_out:
             pass
     except Exception as e:
-        print(f" ERROR - Could not open output file '{xlsx_file}' for writing. \n You probably have it open in another program.")
+        print(
+            f" ERROR - Could not open output file '{xlsx_file}' for writing.\n"
+            f" You probably have it open in another program."
+        )
         print(f" Exception: {type(e).__name__}: {e}\n")
         return
-             
-        
-    # create html directory if not exists
+
+    # html cacheing
     html_dir = "./html"
-    
-    if not os.path.isdir(html_dir):
-        os.makedirs(html_dir , exist_ok=True)
-                    
-    # ask user if they wish to skip the page downloading step
-    print("\n Do you wish to skip the page downloading step and only parse existing HTML files? (y/n): ", end="")
-    choice = input().strip().lower()
-    
-    if choice != 'y':
-        print("\n Proceeding to download HTML files.\n")
-                    
-        # delete all files in html_dir
-        print (" Deleting existing files in html directory...")
-        for filename in os.listdir(html_dir):
-            file_path = os.path.join(html_dir, filename)
-            try:
-                if os.path.isfile(file_path):
-                    os.unlink(file_path)
-            except Exception as e:
-                print(f" Warning - Could not delete file: {file_path}, error: {e}")
-    
-        # initialize Chrome webdriver
-        driver = get_driver(headless=True)
-        if driver is None:
-            print(" ERROR - Could not initialize Chrome WebDriver. Exiting.")
-            return
-            
-        # process each URL        
-        print (" Opening each URL in your web browser and then saving the page...")
-        print (" This may take a while depending on number of URLs.")
+    cache_html = False
 
-        try:
-            for url in urls:
-                print(f" Processing URL: {url}")
-                save_page(url, html_dir, driver, timeout=15, max_retries=3)      
-        finally:
-            driver.quit()
-
-        print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")        
-        print("\n All done! HTML pages saved in html directory.")
-        print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    
+    print("\n Do you want to cache the raw HTML pages to the 'html' directory for debugging/offline use? (y/n): ", end="")
+    answer = input().strip().lower()
+    if answer == "y":
+        cache_html = True
+        os.makedirs(html_dir, exist_ok=True)
+        print(f" Will cache HTML pages under: {html_dir}")
     else:
-        print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~") 
-        print("\n Skipping page downloading step. Will only parse existing HTML files.\n")
-        print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    
+        print(" Not caching HTML pages.")
+
+    # start scraping
     print("\n Now scraping the web pages for key research metrics...")
-    print("\n ------------------------------------------") 
-                    
-    # process each URL            
-    results = []
+    print("\n ------------------------------------------")
+
+    session = requests.Session()
+
+    results: List[Dict[str, object]] = []
     for url in urls:
-        record = process_profile(url, journal_titles, html_dir)
+        print(f"\n === Processing profile: {url} ===")
+        record = process_profile(
+            url,
+            journal_titles,
+            session,
+            pagesize=100,
+            cache_html=cache_html,
+            html_dir=html_dir,
+        )
         if record is not None:
             results.append(record)
 
+
     if not results:
-        print(" No results to write (no HTML files found / parsed).")
+        print(" No results to write (no profiles scraped).")
         return
-    
+
     # write results to CSV
     print(f"\n Writing results to CSV file: {output_file} ...")
-    
-    fieldnames = ["url", 
-                  "user_id", 
-                  "name", 
-                  "institution", 
-                  "research_areas", 
-                  "citations_all", 
-                  "citations_5y", 
-                  "h_index_all", 
-                  "h_index_5y",
-                  "journal_count_tot"] + journal_titles
-    
-    column_labels = {
+
+    fieldnames = [
+        "url",
+        "user_id",
+        "name",
+        "institution",
+        "research_areas",
+        "citations_all",
+        "citations_5y",
+        "h_index_all",
+        "h_index_5y",
+        "article_count",
+        "journal_count_tot",
+    ] + journal_titles
+
+    column_labels: Dict[str, str] = {
         "url": "URL",
         "user_id": "Scholar ID",
         "name": "Name",
@@ -534,7 +688,8 @@ def main():
         "citations_5y": "Citations (5y)",
         "h_index_all": "H-index (All)",
         "h_index_5y": "H-index (5y)",
-        "journal_count_tot": "Total Journal Publications"
+        "article_count": "Total Number of Publications",
+        "journal_count_tot": "Total Journal Publications",
     }
 
     for j in journal_titles:
@@ -546,47 +701,43 @@ def main():
         writer = csv.writer(f_out)
         writer.writerow(pretty_headers)
         for row in results:
-            writer.writerow([row[col] for col in fieldnames])
+            writer.writerow([row.get(col, "") for col in fieldnames])
 
-    # convert output_file to an xlsx file
+    # convert CSV to Excel
     print("\n Converting CSV results to Excel format...")
     try:
-        xlsx_file = output_file.replace(".csv", ".xlsx")
         df = pd.read_csv(output_file)
         df.to_excel(xlsx_file, index=False)
         print(f" Excel file saved: {xlsx_file}")
-        
     except Exception as e:
         print(f"\n ERROR - Could not convert CSV to Excel. Exception: {type(e).__name__}: {e}")
-    
+
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print(f"\n All done! Wrote {len(results)} rows to {output_file} and {xlsx_file}.")
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    
-    # view the urls in default browser
+
+    # optional: step through URLs in default browser
     print("\n Would you like to step through each of the URLs? (y/n): ", end="")
     choice = input().strip().lower()
 
-    if choice == 'y':
+    if choice == "y":
         print("\n Stepping through each URL in your default web browser...")
         for url in urls:
-            print(f"\nOpening URL: {url}")
+            print(f"\n Opening URL: {url}")
             opened = open_default_browser(url)
-
             if not opened:
-                print("Warning: Could not open browser. Stopping step-through.\n")
+                print(" Warning: Could not open browser. Stopping step-through.\n")
                 break
-            
             time.sleep(0.2)
+            input(" Press Enter to continue to the next URL...")
 
-            input("Press Enter to continue to the next URL...")
-            
     print(f"\n All done! The results are in {output_file}. Bye!\n")
     print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
-    
-# =====================================================
 
+
+# =========================
 # main entry point
+# =========================
 
 if __name__ == "__main__":
-    main()        
+    main()
