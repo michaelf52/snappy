@@ -24,6 +24,8 @@ MAX_BLOCK_RETRIES_DEFAULT = 0
 BLOCKING_SUSPECTED = False
 FETCH_ONLY_MODE = False
 OFFLINE_MODE = False
+NOT_FOUND_STRING = ""
+NOT_FOUND_NAN = float('nan')
 
 # =========================
 # classes
@@ -854,6 +856,8 @@ def empty_record(
     candidate: tuple, 
     journal_list: List[str]
 ) -> Dict[str, object]:
+    
+    global NOT_FOUND_STRING
    
     print(f"\n Setting empty record \n")
     print("\n ===============================================================================\n")
@@ -867,24 +871,24 @@ def empty_record(
         "expertise_area": candidate.expertise_area,
         "academic_level": candidate.academic_level,
         "PhD_year": candidate.PhD_year,
-        "gs_url": "N/A",           
+        "gs_url": NOT_FOUND_STRING,           
         "PhD_institution": candidate.PhD_institution,
         "PhD_institution_rank": int(candidate.PhD_institution_rank) if str(candidate.PhD_institution_rank).isdigit() else float('nan'),
         "YNM": "",
         "comments": "",
         "recruiter_notes": "",     
-        "gs_name": "N/A",
-        "gs_institution": "N/A",
-        "gs_research_areas": "N/A",
-        "citations_all": "N/A",
-        "citations_5y": "N/A",
-        "h_index_all": "N/A",
-        "h_index_5y": "N/A",
-        "article_count": "N/A",
-        "journal_count_tot": "N/A",
+        "gs_name": NOT_FOUND_STRING,
+        "gs_institution": NOT_FOUND_STRING,
+        "gs_research_areas": NOT_FOUND_STRING,
+        "citations_all": NOT_FOUND_STRING,
+        "citations_5y": NOT_FOUND_STRING,
+        "h_index_all": NOT_FOUND_STRING,
+        "h_index_5y": NOT_FOUND_STRING,
+        "article_count": NOT_FOUND_STRING,
+        "journal_count_tot": NOT_FOUND_STRING,
     }
     for journal in journal_list:
-        record[journal] = "N/A"
+        record[journal] = NOT_FOUND_STRING
     return record
 
 # =========================
@@ -1030,10 +1034,6 @@ def main():
                     lambda x: x.replace("\r", " ").replace("\n", " ")
                     if isinstance(x, str) else x
                 )
-
-        hr_csv_file = hr_report_file.replace(".xlsx", ".csv")
-        df_hr.to_csv(hr_csv_file, index=False)
-        print(f" Converted HR report to CSV: {hr_csv_file}")
 
     except Exception as e:
         print(f" ERROR - Could not convert HR report to CSV. Exception: {type(e).__name__}: {e}")
@@ -1233,10 +1233,9 @@ def main():
         return
     
     # write results to CSV and xlsx
-    output_file = rel_path + "snappy_results_" + time.strftime("%Y-%m-%d_%H-%M") + ".csv"
-    xlsx_file = output_file.replace(".csv", ".xlsx")
+    output_file = rel_path + "snappy_results_" + time.strftime("%Y-%m-%d_%H-%M") + ".xlsx"
     
-    print(f"\n Writing records to CSV file: {output_file} ...")
+    print(f"\n Writing records to: {output_file} ...")
     
     fieldnames = list(records[0].keys())
     
@@ -1273,27 +1272,19 @@ def main():
         column_labels[j] = f"{j}"
 
     pretty_headers = [column_labels[col] for col in fieldnames]
-    
-    with open(output_file, "w", newline="", encoding="utf-8") as f_out:
-        writer = csv.writer(f_out)
-        writer.writerow(pretty_headers)
-        for row in records:
-            writer.writerow([row.get(col, "") for col in fieldnames])
 
-    # convert CSV to Excel
-    print("\n Converting CSV results to Excel format...")
     try:
-        df = pd.read_csv(
-            output_file,      
-        )
-        df.to_excel(xlsx_file, index=False)
-        print(f" Excel file saved: {xlsx_file}")
-
+        df = pd.DataFrame(records, columns=fieldnames)
+        df.columns = pretty_headers
+        df.to_excel(output_file, index=False)
+        print(f"Excel file saved: {output_file}")     
     except Exception as e:
-        print(f"\n ERROR - Could not convert CSV to Excel. Exception: {type(e).__name__}: {e}")
+        print(f"\n ERROR - Could not write Excel file. Exception: {type(e).__name__}: {e}")
+        return
 
+ 
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    print(f"\n All done! Wrote {len(records)} rows to {xlsx_file}.")
+    print(f"\n All done! Wrote {len(records)} rows to {output_file}.")
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
     # optional bonus step: step through URLs in default browser
