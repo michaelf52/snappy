@@ -231,7 +231,7 @@ def scrape_it(html: str,
 ) -> Tuple[
     Optional[str],          # name
     Optional[str],          # institution
-    Optional[List[str]],              # research areas
+    Optional[List[str]],    # research areas
     Optional[int],          # h_all
     Optional[int],          # h_5y
     Optional[int],          # cit_all
@@ -936,15 +936,14 @@ def main():
     print(" ~~~~~~ Welcome to Snappy - The Super Neat Academic Profile Parser.py ~~~~~~")
     print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
 
-    # relative path for input/output files
-    # if user is in snappy/src directory, go up one level
+    # get relative path for input/output files
     cwd = os.getcwd()
     print(f" Current working directory: {cwd}")
-    if cwd.endswith("src"):
+    if cwd.endswith("snappy/src") or cwd.endswith("snappy\\src"):
         rel_path = "../user/"
     elif cwd.endswith("snappy"):
         rel_path = "./user/"
-    elif cwd.endswith("user"):
+    elif cwd.endswith("snappy/user") or cwd.endswith("snappy\\user"):
         rel_path = "./"
     else:
         print(f"\n ERROR - Please run this script from within the 'snappy/user' directory.\n")
