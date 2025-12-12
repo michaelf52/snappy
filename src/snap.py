@@ -519,7 +519,7 @@ def scrape_profile_all_publications_requests(
         raise GSBlockedError(f"Blocked or no pages for {profile_url}")
     else:
         if not FETCH_ONLY_MODE:
-            print(" === Aggregated over ALL publications pages ===")
+            print("\n === Results aggregated over ALL publications pages ===\n")
             print(f" Name: {name}")
             print(f" Institution: {institution}")
             if research_areas:
@@ -629,7 +629,7 @@ def scrape_profile_all_publications_offline(
     if not any_page:
         print(f"\n Warning - No cached HTML pages found for user_id={user_id} in {html_dir}\n")
     else:
-        print(" === Aggregated over ALL cached pages (offline) ===")
+        print("\n === Results aggregated over ALL cached pages (offline) ===\n")
         print(f" Name: {name}")
         print(f" Institution: {institution}")
         if research_areas:
@@ -902,6 +902,7 @@ def main():
     
     global OFFLINE_MODE
     global FETCH_ONLY_MODE
+    global BLOCKING_SUSPECTED
     
     parser = argparse.ArgumentParser(
         description="Snappy - Super Neat Academic Profile Parser"
@@ -998,7 +999,7 @@ def main():
     # request HR report name
     hr_report_file = input(
         " Enter the name of the HR report file to process "
-        "or press Enter for default ('Campaign_Application_Report.xlsx'):\n ~ "
+        "or press Enter for default ('Campaign_Application_Report.xlsx'):\n "
     ) or "Campaign_Application_Report.xlsx"
     
     hr_report_file = rel_path + hr_report_file.strip()
@@ -1080,7 +1081,7 @@ def main():
     # read list of key journal names
     journal_list_file = input(
         " Enter the name of the file containing a list of journal names of interest "
-        "or press Enter for default ('journal_list.txt'):\n ~ "
+        "or press Enter for default ('journal_list.txt'):\n "
     ) or "journal_list.txt"
     
     journal_list_file = rel_path + journal_list_file.strip()
@@ -1116,7 +1117,7 @@ def main():
         print(f" Normal or Fetch-only mode: I will cache HTML pages under: {html_dir}")
 
     # ask user to enter the candidate number to start on (default 1)
-    start_candidate_num_str = input("\n Enter the candidate number to start processing from (default 1):\n ~ ")
+    start_candidate_num_str = input("\n Enter the candidate number to start processing from (default 1):\n ")
     if not start_candidate_num_str.strip():
         start_candidate_num = 1
     else:
@@ -1134,7 +1135,7 @@ def main():
     
     # ask user to enter the candidate number to stop on (default last)
     end_candidate_num_str = input(
-        f"\n Enter the candidate number to stop processing on (default {len(df_hr) + start_candidate_num - 1}):\n ~ "
+        f"\n Enter the candidate number to stop processing on (default {len(df_hr) + start_candidate_num - 1}):\n "
     )
     if not end_candidate_num_str.strip():
         end_candidate_num = len(df_hr) + start_candidate_num - 1
@@ -1189,12 +1190,23 @@ def main():
                 records.append(record)
             else:
                 print(f" Warning - No record returned for candidate {candidate.candidate_id}.")
+                print(f"\n ===============================================================================\n")
                 if BLOCKING_SUSPECTED:
-                    print(f"\n Stopping further processing due to suspected blocking by Google.")
-                    print(f" Please try again in an hour or two or use the cached html files.")
-                    print(f" Note that you can restart from this candidate number next time. Bye!\n")
-                    print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
-                    break
+                    # give user the option to continue or stop
+                    print(f"\n I suspect that Google is blocking web requests. Would you like to continue or stop?")
+                    print(f" Note that, if you stop now, you can restart from this candidate number next time.\n Then do a final run in OFFLINE mode to capture all candidates in the spreadsheet.\n")
+                    answer = input(" Enter 'c' to continue, 's' to stop processing: ").strip().lower()
+                    if answer == "c":
+                        print(f"\n Continuing processing... but if this happens again soon I strongly suggest you stop and come back later.\n")
+                        BLOCKING_SUSPECTED = False
+                        time.sleep(5.0)  # brief pause before continuing
+                        continue
+                    else:
+                        print(f"\n Stopping further processing due to suspected blocking by Google.")
+                        print(f" Please try again in an hour or two.")
+                        print(f"\n Bye!\n")
+                        print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
+                        break
 
         # random delay between profiles to emulate human behaviour and reduce chance of blocking
         if not OFFLINE_MODE and not FETCH_ONLY_MODE:
@@ -1212,12 +1224,10 @@ def main():
         print(" Cached HTML files (if any) are in the 'html' directory.")
         print(" You can now rerun Snappy in OFFLINE mode to parse them without contacting Google Scholar.\n")
         print(" Bye!\n")       
-        print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
         return
 
     if not records:
         print(" No records to write (no profiles scraped). Bye!\n")
-        print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
         return
     
     # write results to CSV
