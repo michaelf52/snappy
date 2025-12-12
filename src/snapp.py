@@ -79,6 +79,16 @@ def sanitize_url(url: str) -> Optional[str]:
 
 # =========================
 
+# random sleep
+        
+def random_sleep(typical_delay: float) -> None:
+
+        sleep_s = random.uniform(typical_delay * 0.5, typical_delay * 1.5)
+        print(f" Random (human-like) delay for {sleep_s:.1f} seconds before proceeding...")
+        time.sleep(sleep_s)
+        
+# =========================
+
 # deal with GS blocking, CAPTCHA and other antics
 
 def looks_like_block_page(html: str) -> bool:
@@ -126,7 +136,7 @@ def iter_scholar_pages_requests(
     session: requests.Session,
     pagesize: int = 100,
     max_pages: int = 50,
-    delay: float = 5.0,              # normal delay between successful pages
+    delay: float = 8.0,              # typical delay between successful pages
     max_block_retries: int = 5,      # how many times to retry a blocked page
     block_backoff_base: float = 10.0 # starting backoff in seconds
 ) -> Generator[str, None, None]:
@@ -207,11 +217,8 @@ def iter_scholar_pages_requests(
         cstart += pagesize
         page_index += 1
 
-        # add another delay between pages just to avoid looking like a bot 
-        sleep_s = random.uniform(3.0, 12.0)
-        print(f" Random (human-like) delay for {sleep_s:.1f} seconds before next page...")
-        time.sleep(sleep_s)
-
+        # add delay between pages to avoid looking like a bot 
+        random_sleep(delay)
 
 # =========================
 
@@ -427,7 +434,7 @@ def scrape_profile_all_publications_requests(
     session: requests.Session,
     pagesize: int = 100,
     max_pages: int = 50,
-    delay: float = 5.0,
+    delay: float = 8.0,
     max_block_retries: int = MAX_BLOCK_RETRIES_DEFAULT,
     block_backoff_base: float = 10.0,
     cache_html: bool = False,
@@ -707,6 +714,7 @@ def process_profile(
     pagesize: int = 100,
     cache_html: bool = False,
     html_dir: str = "./html",
+    delay: float = 8.0,
 ) -> Dict[str, object] | None:
 
     global BLOCKING_SUSPECTED
@@ -781,6 +789,7 @@ def process_profile(
                 pagesize=pagesize,
                 cache_html=cache_html,
                 html_dir=html_dir,
+                delay=delay,
             )
         except GSBlockedError as e:
             BLOCKING_SUSPECTED = True
@@ -1151,6 +1160,24 @@ def main():
     print(f" Stopping processing on candidate number {end_candidate_num}...\n")
     df_hr = df_hr.iloc[: end_candidate_num - start_candidate_num + 1].reset_index(drop=True)
     
+    if not OFFLINE_MODE:
+        # get the typical delay to use to avoid blocking
+        print("\n To reduce the chance of being blocked by Google Scholar, I need to wait for a random time period between web requests.")
+        print(" The longer the wait time, the less likely you are to be blocked, but the longer the total processing time will be.\n")
+        typical_delay_str = input(" Enter the typical delay in seconds between requests (default 8.0):\n ") 
+        if not typical_delay_str.strip():
+            typical_delay = 8.0
+        else:
+            try:
+                typical_delay = float(typical_delay_str.strip())
+            except ValueError:
+                print(" Invalid delay entered, defaulting to 8.0 seconds.")
+                typical_delay = 8.0
+                if typical_delay <= 0.0:
+                    typical_delay = 8.0
+                    print(" Sorry. Second law of thermodynamics forbids going backwards in time.")
+        print(f" Using a typical delay of {typical_delay} seconds between requests.\n")
+            
     # start scraping
     print("\n Now scraping the web pages for key research metrics...\n")
     print("\n ===============================================================================\n")
@@ -1185,6 +1212,7 @@ def main():
                 pagesize=100,
                 cache_html=cache_html,
                 html_dir=html_dir,
+                delay=typical_delay,
             )
             if record is not None:
                 records.append(record)
@@ -1210,13 +1238,9 @@ def main():
 
         # random delay between profiles to emulate human behaviour and reduce chance of blocking
         if not OFFLINE_MODE and not FETCH_ONLY_MODE:
-            sleep_s = random.uniform(5.0, 12.0)
-            print(f" Random (human-like) delay for {sleep_s:.1f} seconds before next profile...")
-            time.sleep(sleep_s)
+            random_sleep(typical_delay=typical_delay)
         elif FETCH_ONLY_MODE:
-            sleep_s = random.uniform(5.0, 12.0)
-            print(f" Random (human-like) delay {sleep_s:.1f} seconds before next fetch...")
-            time.sleep(sleep_s)
+            random_sleep(typical_delay=typical_delay)
 
     if FETCH_ONLY_MODE:
         print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n") 
@@ -1279,8 +1303,8 @@ def main():
     try:
         df = pd.read_csv(
             output_file,
-            keep_default_na=False,  # important
-            na_values=[]            # important
+            keep_default_na=False,
+            na_values=[]         
         )
         df.to_excel(xlsx_file, index=False)
         print(f" Excel file saved: {xlsx_file}")
@@ -1292,7 +1316,7 @@ def main():
     print(f"\n All done! Wrote {len(records)} rows to {xlsx_file}.")
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
-    # optional: step through URLs in default browser
+    # optional bonus step: step through URLs in default browser
     if not OFFLINE_MODE:
         print("\n Would you like to step through each of the URLs? (y/N): ", end="")
         choice = input().strip().lower()
