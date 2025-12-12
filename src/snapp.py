@@ -826,6 +826,7 @@ def process_profile(
         "PhD_year": candidate.PhD_year,
         "gs_url": url,  
         "PhD_institution": candidate.PhD_institution,
+        "PhD_institution_rank": int(candidate.PhD_institution_rank) if str(candidate.PhD_institution_rank).isdigit() else float('nan'),
         "YNM": "",
         "comments": "",
         "recruiter_notes": "",        
@@ -868,6 +869,7 @@ def empty_record(
         "PhD_year": candidate.PhD_year,
         "gs_url": "N/A",           
         "PhD_institution": candidate.PhD_institution,
+        "PhD_institution_rank": int(candidate.PhD_institution_rank) if str(candidate.PhD_institution_rank).isdigit() else float('nan'),
         "YNM": "",
         "comments": "",
         "recruiter_notes": "",     
@@ -949,35 +951,6 @@ def main():
         print(f"\n ERROR - Please run this script from within the 'snappy/user' directory.\n")
         return
     
-    # output file name
-    output_file = rel_path + "snappy_results.csv"
-
-    # test CSV and XLSX output before we go any further
-    print(f"\n Testing that I can open CSV output file '{output_file}' for writing...")
-    try:
-        with open(output_file, "w", newline="", encoding="utf-8") as f_out:
-            pass
-    except Exception as e:
-        print(
-            f" ERROR - Could not open output file '{output_file}' for writing.\n"
-            f" You probably have it open in another program."
-        )
-        print(f" Exception: {type(e).__name__}: {e}\n")
-        return
-
-    xlsx_file = output_file.replace(".csv", ".xlsx")
-    print(f" Testing that I can open Excel output file '{xlsx_file}' for writing...")
-    try:
-        with open(xlsx_file, "w", newline="", encoding="utf-8") as f_out:
-            pass
-    except Exception as e:
-        print(
-            f" ERROR - Could not open output file '{xlsx_file}' for writing.\n"
-            f" You probably have it open in another program."
-        )
-        print(f" Exception: {type(e).__name__}: {e}\n")
-        return
-
     # give user a chance to invoke these modes if not already specified
     if not OFFLINE_MODE and not FETCH_ONLY_MODE:
         # give user option to run in offline mode
@@ -1078,6 +1051,7 @@ def main():
         "What is the Academic Level you are applying for?": "academic_level",
         "Which year did you obtain your PhD? (YYYY)(Required if you have completed a PhD)": "PhD_year",
         "Which Institution did you obtain your PhD from?": "PhD_institution",
+        "PhD Institution Rank": "PhD_institution_rank",
         "Google Scholar Link": "gs_url",
         "Would you like to longlist/Shortlist this candidate? Y= Yes M = Maybe N =No": "YNM",
         "Comments": "comments",
@@ -1105,6 +1079,9 @@ def main():
             print(" Warning - No journal titles found. No journal counts will be recorded.")
         else:
             print(f" Loaded {len(journal_list)} journal titles from {journal_list_file}")
+    
+    # sort journal list in alphabetical order
+    journal_list.sort()
 
     normalized_journal_titles = {
         normalize_journal_name(j): j
@@ -1176,6 +1153,8 @@ def main():
                     typical_delay = 8.0
                     print(" Sorry. Second law of thermodynamics forbids going backwards in time.")
         print(f" Using a typical delay of {typical_delay} seconds between requests.\n")
+    else:
+        typical_delay = 0.01  # minimal delay in offline mode
             
     # start scraping
     print("\n Now scraping the web pages for key research metrics...\n")
@@ -1253,11 +1232,14 @@ def main():
         print(" No records to write (no profiles scraped). Bye!\n")
         return
     
-    # write results to CSV
+    # write results to CSV and xlsx
+    output_file = rel_path + "snappy_results_" + time.strftime("%Y-%m-%d_%H-%M") + ".csv"
+    xlsx_file = output_file.replace(".csv", ".xlsx")
+    
     print(f"\n Writing records to CSV file: {output_file} ...")
     
-    fieldnames = list(records[0].keys()) + journal_list
-
+    fieldnames = list(records[0].keys())
+    
     column_labels: Dict[str, str] = {
         # HR fields
         "candidate_id": "Candidate ID",
@@ -1271,6 +1253,7 @@ def main():
         "PhD_year": "PhD Completion Year",
         "gs_url": "Google Scholar URL",        # this is the sanitized URL
         "PhD_institution": "PhD Institution",
+        "PhD_institution_rank": "PhD Institution Rank",
         "YNM": "Longlist/Shortlist (Yes/No/Maybe)",
         "comments": "Comments",
         "recruiter_notes": "Recruiter Notes",
@@ -1287,10 +1270,10 @@ def main():
     }
 
     for j in journal_list:
-        column_labels[j] = f"Publications in {j}"
+        column_labels[j] = f"{j}"
 
     pretty_headers = [column_labels[col] for col in fieldnames]
-
+    
     with open(output_file, "w", newline="", encoding="utf-8") as f_out:
         writer = csv.writer(f_out)
         writer.writerow(pretty_headers)
@@ -1301,9 +1284,7 @@ def main():
     print("\n Converting CSV results to Excel format...")
     try:
         df = pd.read_csv(
-            output_file,
-            keep_default_na=False,
-            na_values=[]         
+            output_file,      
         )
         df.to_excel(xlsx_file, index=False)
         print(f" Excel file saved: {xlsx_file}")
