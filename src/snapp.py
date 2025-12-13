@@ -555,9 +555,6 @@ def scrape_profile_all_publications_requests(
             for journal, count in total_journal_counts.items():
                 if count > 0:
                     print(f"  {journal}: {count}")
-                    print(" Journal match details:")
-                    for detail in total_journal_details[journal]:
-                        print(f"   - {detail}")
         print("\n ===============================================================================\n")
 
     return (
@@ -675,9 +672,6 @@ def scrape_profile_all_publications_offline(
         for journal, count in total_journal_counts.items():
             if count > 0:
                 print(f"  {journal}: {count}")
-                print(" Journal match details:")
-                for detail in total_journal_details[journal]:
-                    print(f"   - {detail}")
         print("\n ===============================================================================\n")
 
     return (
@@ -736,6 +730,49 @@ def fetch_and_cache_profile(
         cache_html=True,
         html_dir=html_dir,
     )
+
+# =========================
+
+# create a single string object that gives a summary of the journal_details
+
+def create_journal_summary(
+    journal_counts: Dict[str, int],
+    journal_details: Dict[str, List[str]],
+    journal_list: List[str],
+) -> str:
+    
+    summary_lines: List[str] = []
+
+    for journal in journal_list:
+        count = journal_counts.get(journal, 0)
+        details = journal_details.get(journal, [])
+
+        if count > 0:
+            # optional journal header (comment out if you want pure flat list)
+            summary_lines.append(f"{journal} ({count} article{'s' if count != 1 else ''}):")
+
+            for detail in details:
+                # expected detail format: authors | title | journal_info
+                parts = [p.strip() for p in detail.split("|", 2)]
+
+                if len(parts) == 3:
+                    authors, title, journal_info = parts
+                    line = f'{authors}, "{title}", {journal_info}'
+                else:
+                    # fallback if format is unexpected
+                    line = detail.replace("|", ", ")
+
+                summary_lines.append(line)
+
+            # blank line between journals for readability
+            summary_lines.append("")
+
+    # remove trailing blank line
+    while summary_lines and summary_lines[-1] == "":
+        summary_lines.pop()
+
+    return "\n".join(summary_lines)
+
 
 # =========================
 
@@ -881,6 +918,11 @@ def process_profile(
         "journal_count_tot": sum(journal_counts.values())
     })
 
+    record["journal_summary"] = create_journal_summary(
+        journal_counts=journal_counts,
+        journal_details=journal_details,
+        journal_list=journal_list)
+    
     for j in journal_list:
         record[j] = journal_counts.get(j, 0)
 
@@ -1288,6 +1330,7 @@ def main():
         "h_index_5y": "H-index (5y)",
         "article_count": "Total Number of Publications",
         "journal_count_tot": "Total Number of Publications in Journal List",
+        "journal_summary": "Publication Summary",        
     }
 
     for j in journal_list:
