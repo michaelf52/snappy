@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import os
-import csv
 import webbrowser
 import time
 from pathlib import Path
@@ -79,6 +78,33 @@ def sanitize_url(url: str) -> Optional[str]:
         print(f" Warning - Could not extract user id from URL: {url}. sanitize_url failed!")
         return None
 
+# ========================
+
+# normalize a journal name by cleaning punctuation and whitespace
+
+def normalize_journal_name(name: str) -> str:
+    name = name.lower().strip()
+    # remove punctuation but keep spaces
+    name = name.translate(PUNCT)
+    # collapse multiple spaces
+    name = re.sub(r"\s+", " ", name)
+    return name
+
+# ========================
+
+# extract the journal name from the journal_info field
+
+def extract_journal_name(raw_info: str) -> str:
+
+    s = raw_info.strip()
+
+    # look for the first spot where a volume/pages/year chunk starts.
+    # this is usually: space + digit, or comma + space + digit, or space + '(' + digit
+    m = re.match(r"^(.*?)(?=\s\d|\s\(\d|,\s*\d{1,4})", s)
+    if m:
+        return m.group(1).strip()
+    return s  # fallback: whole string if no match
+
 # =========================
 
 # random sleep
@@ -111,7 +137,7 @@ def looks_like_block_page(html: str) -> bool:
 
     return any(marker in text for marker in block_markers)
 
-# =========================
+# ===================
 
 # get the list_works URL using cstart/pagesize params
 
@@ -238,7 +264,9 @@ def scrape_it(html: str,
     Optional[int],          # h_5y
     Optional[int],          # cit_all
     Optional[int],          # cit_5y
-    Dict[str, int]          # journal_match_counts
+    Dict[str, int],         # journal_match_counts
+    Dict[str, List[str]],   # journal_match_details
+    int,                     # article_count
 ]:
     global FETCH_ONLY_MODE
     soup = BeautifulSoup(html, "html.parser")
@@ -347,7 +375,7 @@ def scrape_it(html: str,
     # <table id="gsc_a_t">...</table>
     # ---------------------------------------------------------------------
     journal_match_counts: Dict[str, int] = {journal: 0 for journal in journal_list}
-    
+    journal_match_details: Dict[str, List[str]] = {journal: [] for journal in journal_list}
     article_count = 0
 
     table_pubs = soup.find("table", id="gsc_a_t")
@@ -383,47 +411,29 @@ def scrape_it(html: str,
                 print(f" Journal match: '{raw_info}' -> '{matched_journal}'")
                 journal_match_counts[matched_journal] += 1
 
-    if not FETCH_ONLY_MODE:                  
-        print(f" Total articles on this page: {article_count}")
-        print(" Journal match counts on this page:")    
-        for journal, count in journal_match_counts.items():
-            if count > 0:
-                print(f"  {journal}: {count}")
+                # ---- capture full publication details ----
+                title_elem = td.find("a", class_="gsc_a_at")
+                title = title_elem.get_text(strip=True) if title_elem else "UNKNOWN TITLE"
+
+                authors = gray_elems[0].get_text(strip=True)
+                journal_info = gray_elems[1].get_text(strip=True)
+
+                full_entry = f"{authors} | {title} | {journal_info}"
+                journal_match_details[matched_journal].append(full_entry)
+
+                if not FETCH_ONLY_MODE:                  
+                    print(f" Total articles on this page: {article_count}")
+                    print(" Journal match counts on this page:")    
+                    for journal, count in journal_match_counts.items():
+                        if count > 0:
+                            print(f"  {journal}: {count}")
 
     print("\n ------------------------------------------\n")
 
     if page_idx == 0:
-        return name, institution, research_areas, h_all, h_5y, cit_all, cit_5y, journal_match_counts, article_count
+        return name, institution, research_areas, h_all, h_5y, cit_all, cit_5y, journal_match_counts, journal_match_details, article_count
     else:
-        return journal_match_counts, article_count
-
-# ========================
-
-# normalize a journal name by cleaning punctuation and whitespace
-
-def normalize_journal_name(name: str) -> str:
-    name = name.lower().strip()
-    # remove punctuation but keep spaces
-    name = name.translate(PUNCT)
-    # collapse multiple spaces
-    name = re.sub(r"\s+", " ", name)
-    return name
-
-# ========================
-
-# extract the journal name from the journal_info field
-
-def extract_journal_name(raw_info: str) -> str:
-
-    s = raw_info.strip()
-
-    # look for the first spot where a volume/pages/year chunk starts.
-    # this is usually: space + digit, or comma + space + digit, or space + '(' + digit
-    m = re.match(r"^(.*?)(?=\s\d|\s\(\d|,\s*\d{1,4})", s)
-    if m:
-        return m.group(1).strip()
-    return s  # fallback: whole string if no match
-
+        return journal_match_counts, journal_match_details, article_count
 
 # ========================
 
@@ -449,7 +459,8 @@ def scrape_profile_all_publications_requests(
     Optional[int],          # h_5y
     Optional[int],          # cit_all
     Optional[int],          # cit_5y
-    Dict[str, int],         # total journal_match_counts across all pages
+    Dict[str, int],         # total journal_match_counts
+    Dict[str, List[str]],   # total_journal_details
     int,                    # total_article_count
     bool                    # any_page
 ]:
@@ -465,6 +476,7 @@ def scrape_profile_all_publications_requests(
     cit_5y: Optional[int] = None
 
     total_journal_counts: Dict[str, int] = {j: 0 for j in journal_list}
+    total_journal_details: Dict[str, List[str]] = {j: [] for j in journal_list}
     total_article_count = 0
 
     any_page = False
@@ -506,18 +518,21 @@ def scrape_profile_all_publications_requests(
                 cit_all,
                 cit_5y,
                 page_journal_counts,
+                page_journal_details,
                 page_article_count,
             ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
         else:
             # subsequent pages - only get journal and article counts
             (
                 page_journal_counts,
+                page_journal_details,                
                 page_article_count,
             ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)
 
-        # accumulate journal counts and article counts
+        # accumulate journal counts, details and article counts
         for j in journal_list:
             total_journal_counts[j] += page_journal_counts.get(j, 0)
+            total_journal_details[j].extend(page_journal_details[j])
 
         total_article_count += page_article_count
         
@@ -540,6 +555,9 @@ def scrape_profile_all_publications_requests(
             for journal, count in total_journal_counts.items():
                 if count > 0:
                     print(f"  {journal}: {count}")
+                    print(" Journal match details:")
+                    for detail in total_journal_details[journal]:
+                        print(f"   - {detail}")
         print("\n ===============================================================================\n")
 
     return (
@@ -551,6 +569,7 @@ def scrape_profile_all_publications_requests(
         cit_all,
         cit_5y,
         total_journal_counts,
+        total_journal_details,
         total_article_count,
         any_page
     )
@@ -573,7 +592,8 @@ def scrape_profile_all_publications_offline(
     Optional[int],          # h_5y
     Optional[int],          # cit_all
     Optional[int],          # cit_5y
-    Dict[str, int],         # total journal_match_counts across all pages
+    Dict[str, int],         # total journal_match_counts
+    Dict[str, List[str]],   # total_journal_details
     int,                    # total_article_count
     bool                    # any_page
 ]:
@@ -587,6 +607,7 @@ def scrape_profile_all_publications_offline(
     cit_5y: Optional[int] = None
 
     total_journal_counts: Dict[str, int] = {j: 0 for j in journal_list}
+    total_journal_details: Dict[str, List[str]] = {j: [] for j in journal_list}
     total_article_count = 0
 
     any_page = False
@@ -619,17 +640,21 @@ def scrape_profile_all_publications_offline(
                 cit_all,
                 cit_5y,
                 page_journal_counts,
+                page_journal_details,
                 page_article_count,
             ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
         else:
             # subsequent pages - only get journal and article counts
             (
                 page_journal_counts,
+                page_journal_details,
                 page_article_count,
             ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)
 
+        # accumulate journal counts, details and article counts
         for j in journal_list:
             total_journal_counts[j] += page_journal_counts.get(j, 0)
+            total_journal_details[j].extend(page_journal_details[j])
 
         total_article_count += page_article_count
         
@@ -646,6 +671,13 @@ def scrape_profile_all_publications_offline(
         print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
         print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
         print(f" Total articles (all pages): {total_article_count}")
+        print(" Journal match counts (all pages):")
+        for journal, count in total_journal_counts.items():
+            if count > 0:
+                print(f"  {journal}: {count}")
+                print(" Journal match details:")
+                for detail in total_journal_details[journal]:
+                    print(f"   - {detail}")
         print("\n ===============================================================================\n")
 
     return (
@@ -657,6 +689,7 @@ def scrape_profile_all_publications_offline(
         cit_all,
         cit_5y,
         total_journal_counts,
+        total_journal_details,
         total_article_count,
         any_page
     )
@@ -724,97 +757,8 @@ def process_profile(
     info_found = False
     
     print(f"\n === Processing profile for candidate {candidate.candidate_id}: {candidate.candidate_name} ===\n")
-    
+        
     url = candidate.gs_url
-        
-    if pd.isna(url):
-        print("\n Warning - Empty Google Scholar Link, skipping profile.")
-        record = empty_record( 
-            candidate=candidate,
-            journal_list=journal_list
-        )
-        return record
-            
-    url = sanitize_url(str(url).strip())
-    if url is None:
-        print("\n Warning - Could not sanitize URL, skipping profile.")
-        record = empty_record( 
-            candidate=candidate,
-            journal_list=journal_list
-        )
-        return record
-    
-    if OFFLINE_MODE:
-        try:
-            print(" Offline mode: parsing cached HTML only (no web requests).")
-            (
-                gs_name,
-                gs_institution,
-                gs_research_areas,
-                h_all,
-                h_5y,
-                cit_all,
-                cit_5y,
-                journal_counts,
-                article_count,
-                info_found,
-            ) = scrape_profile_all_publications_offline(
-                url,
-                journal_list,
-                normalized_journal_titles,
-                html_dir=html_dir,
-            )
-        except Exception as e:
-            print(f" Detected error while processing cached HTML for {url}.")
-            print(f" Details: {e}")
-            return empty_record(candidate=candidate, journal_list=journal_list)
-    else:
-
-        try:
-            print(f" Attempting to scrape info from Google Scholar URL: {url}")
-            (
-                gs_name,
-                gs_institution,
-                gs_research_areas,
-                h_all,
-                h_5y,
-                cit_all,
-                cit_5y,
-                journal_counts,
-                article_count,
-                info_found,
-            ) = scrape_profile_all_publications_requests(
-                url,
-                journal_list,
-                normalized_journal_titles,
-                session,
-                pagesize=pagesize,
-                cache_html=cache_html,
-                html_dir=html_dir,
-                delay=delay,
-            )
-        except GSBlockedError as e:
-            BLOCKING_SUSPECTED = True
-            print(f" Detected probable Google Scholar block while processing {url}.")
-            print(f" Details: {e}")
-            return empty_record(candidate=candidate, journal_list=journal_list)
-        except Exception as e:
-            print(f" Detected error while processing {url}.")
-            print(f" Details: {e}")
-            return empty_record(candidate=candidate, journal_list=journal_list)
-        
-    if (not info_found):
-        print(f" Warning - No scrapable pages found for URL: {url}")
-        return empty_record(candidate=candidate, journal_list=journal_list)
-
-    if (
-        gs_name is None
-        and gs_institution is None
-        and not gs_research_areas
-        and all(v == 0 for v in journal_counts.values())
-    ):
-        print(f" Warning - No meaningful data scraped for URL: {url}")
-        return empty_record(candidate=candidate, journal_list=journal_list)
     
     record = {
         "candidate_id": candidate.candidate_id,
@@ -832,6 +776,100 @@ def process_profile(
         "YNM": "",
         "comments": "",
         "recruiter_notes": "",        
+    }
+            
+    if pd.isna(url):
+        print("\n Warning - Empty Google Scholar Link, skipping profile.")
+        record.update(empty_record(journal_list))
+        return record
+            
+    url = sanitize_url(str(url).strip())
+    if url is None:
+        print("\n Warning - Could not sanitize URL, skipping profile.")
+        record.update(empty_record(journal_list))
+        return record
+    
+    if OFFLINE_MODE:
+        try:
+            print(" Offline mode: parsing cached HTML only (no web requests).")
+            (
+                gs_name,
+                gs_institution,
+                gs_research_areas,
+                h_all,
+                h_5y,
+                cit_all,
+                cit_5y,
+                journal_counts,
+                journal_details,
+                article_count,
+                info_found,
+            ) = scrape_profile_all_publications_offline(
+                url,
+                journal_list,
+                normalized_journal_titles,
+                html_dir=html_dir,
+            )
+        except Exception as e:
+            print(f" Detected error while processing cached HTML for {url}.")
+            print(f" Details: {e}")
+            record.update(empty_record(journal_list))
+            return record
+
+    else:
+
+        try:
+            print(f" Attempting to scrape info from Google Scholar URL: {url}")
+            (
+                gs_name,
+                gs_institution,
+                gs_research_areas,
+                h_all,
+                h_5y,
+                cit_all,
+                cit_5y,
+                journal_counts,
+                journal_details,
+                article_count,
+                info_found,
+            ) = scrape_profile_all_publications_requests(
+                url,
+                journal_list,
+                normalized_journal_titles,
+                session,
+                pagesize=pagesize,
+                cache_html=cache_html,
+                html_dir=html_dir,
+                delay=delay,
+            )
+        except GSBlockedError as e:
+            BLOCKING_SUSPECTED = True
+            print(f" Detected probable Google Scholar block while processing {url}.")
+            print(f" Details: {e}")
+            record.update(empty_record(journal_list))
+            return record
+        except Exception as e:
+            print(f" Detected error while processing {url}.")
+            print(f" Details: {e}")
+            record.update(empty_record(journal_list))
+            return record
+        
+    if (not info_found):
+        print(f" Warning - No scrapable pages found for URL: {url}")
+        record.update(empty_record(journal_list))
+        return record
+
+    if (
+        gs_name is None
+        and gs_institution is None
+        and not gs_research_areas
+        and all(v == 0 for v in journal_counts.values())
+    ):
+        print(f" Warning - No meaningful data scraped for URL: {url}")
+        record.update(empty_record(journal_list))
+        return record
+    
+    record.update({    
         "gs_name": gs_name or "",
         "gs_institution": gs_institution or "",
         "gs_research_areas": "; ".join(gs_research_areas) if gs_research_areas else "",
@@ -840,11 +878,11 @@ def process_profile(
         "h_index_all": h_all if h_all is not None else "",
         "h_index_5y": h_5y if h_5y is not None else "",
         "article_count": article_count if article_count is not None else "",
-    }
+        "journal_count_tot": sum(journal_counts.values())
+    })
 
-    record["journal_count_tot"] = sum(journal_counts.values())
-    for journal in journal_list:
-        record[journal] = journal_counts.get(journal, 0)
+    for j in journal_list:
+        record[j] = journal_counts.get(j, 0)
 
     return record
 
@@ -853,7 +891,6 @@ def process_profile(
 # return an empty record for failed profiles
 
 def empty_record(
-    candidate: tuple, 
     journal_list: List[str]
 ) -> Dict[str, object]:
     
@@ -861,22 +898,7 @@ def empty_record(
    
     print(f"\n Setting empty record \n")
     print("\n ===============================================================================\n")
-    record = {
-        "candidate_id": candidate.candidate_id,
-        "candidate_name": candidate.candidate_name,
-        "gender": candidate.gender,
-        "email": candidate.email,
-        "country": candidate.country,
-        "current_employee": candidate.current_employee,
-        "expertise_area": candidate.expertise_area,
-        "academic_level": candidate.academic_level,
-        "PhD_year": candidate.PhD_year,
-        "gs_url": NOT_FOUND_STRING,           
-        "PhD_institution": candidate.PhD_institution,
-        "PhD_institution_rank": int(candidate.PhD_institution_rank) if str(candidate.PhD_institution_rank).isdigit() else float('nan'),
-        "YNM": "",
-        "comments": "",
-        "recruiter_notes": "",     
+    record = {   
         "gs_name": NOT_FOUND_STRING,
         "gs_institution": NOT_FOUND_STRING,
         "gs_research_areas": NOT_FOUND_STRING,
@@ -887,8 +909,8 @@ def empty_record(
         "article_count": NOT_FOUND_STRING,
         "journal_count_tot": NOT_FOUND_STRING,
     }
-    for journal in journal_list:
-        record[journal] = NOT_FOUND_STRING
+    for j in journal_list:
+        record[j] = NOT_FOUND_STRING
     return record
 
 # =========================
@@ -1276,8 +1298,7 @@ def main():
     try:
         df = pd.DataFrame(records, columns=fieldnames)
         df.columns = pretty_headers
-        df.to_excel(output_file, index=False)
-        print(f"Excel file saved: {output_file}")     
+        df.to_excel(output_file, index=False)    
     except Exception as e:
         print(f"\n ERROR - Could not write Excel file. Exception: {type(e).__name__}: {e}")
         return
