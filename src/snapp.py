@@ -266,6 +266,8 @@ def scrape_it(
     Optional[int],          # cit_all
     Optional[int],          # cit_5y
     Dict[str, int],         # journal_match_counts
+    Dict[str, int],         # journal_match_counts_fa
+    Dict[str, int],         # journal_num_authors
     Dict[str, List[str]],   # journal_match_details
     int,                    # article_count
 ]:
@@ -374,8 +376,11 @@ def scrape_it(
     # <table id="gsc_a_t">...</table>
     # ---------------------------------------------------------------------
     journal_match_counts: Dict[str, int] = {j: 0 for j in journal_list}
+    journal_match_counts_fa: Dict[str, int] = {j: 0 for j in journal_list}
+    journal_num_authors: Dict[str, int] = {j: 0 for j in journal_list}
     journal_match_details: Dict[str, List[str]] = {j: [] for j in journal_list}
     article_count = 0
+    candidate_surname = name.split(" ")[-1]
 
     table_pubs = soup.find("table", id="gsc_a_t")
     if table_pubs and journal_list:
@@ -415,6 +420,31 @@ def scrape_it(
 
                 authors = gray_elems[0].get_text(strip=True)
                 journal_info = gray_elems[1].get_text(strip=True)
+                
+                # create a list of authors by separating on commas
+                author_list = [a.strip() for a in authors.split(",") if a.strip()]
+                
+                print(author_list)
+                
+                # compare each author to the candidate's name and highlight matches
+                highlighted_author_list = []
+                counter = 0
+                for a in author_list:
+                    counter += 1
+                    # extract the surname (last word) from the author name
+                    author_surname = a.split(" ")[-1]
+                    
+                    if author_surname.lower() == candidate_surname.lower():
+                        print(f"  Matched author surname: {author_surname} in candidate name {name}")
+                        highlighted_author_list.append(f"**{a}")
+                        if counter == 1:
+                            journal_match_counts_fa[matched_journal] += 1
+                    else:
+                        highlighted_author_list.append(a)
+                
+                journal_num_authors[matched_journal] += len(author_list)
+                
+                authors = ", ".join(highlighted_author_list)
 
                 full_entry = f"{authors} | {title} | {journal_info}"
                 journal_match_details[matched_journal].append(full_entry)
@@ -437,6 +467,8 @@ def scrape_it(
         cit_all,
         cit_5y,
         journal_match_counts,
+        journal_match_counts_fa,
+        journal_num_authors,
         journal_match_details,
         article_count,
     )
@@ -465,7 +497,9 @@ def scrape_profile_all_publications_requests(
     Optional[int],          # h_5y
     Optional[int],          # cit_all
     Optional[int],          # cit_5y
-    Dict[str, int],         # total journal_match_counts
+    Dict[str, int],         # total_journal_match_counts
+    Dict[str, int],         # total_journal_match_counts_fa
+    Dict[str, int],         # total_journal_num_authors
     Dict[str, List[str]],   # total_journal_details
     int,                    # total_article_count
     bool                    # any_page
@@ -482,6 +516,8 @@ def scrape_profile_all_publications_requests(
     cit_5y: Optional[int] = None
 
     total_journal_counts: Dict[str, int] = {j: 0 for j in journal_list}
+    total_journal_counts_fa: Dict[str, int] = {j: 0 for j in journal_list}
+    total_journal_num_authors: Dict[str, int] = {j: 0 for j in journal_list}
     total_journal_details: Dict[str, List[str]] = {j: [] for j in journal_list}
     total_article_count = 0
 
@@ -523,6 +559,8 @@ def scrape_profile_all_publications_requests(
             cit_all,
             cit_5y,
             page_journal_counts,
+            page_journal_counts_fa,
+            page_journal_num_authors,
             page_journal_details,
             page_article_count,
         ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
@@ -530,6 +568,8 @@ def scrape_profile_all_publications_requests(
         # accumulate journal counts, details and article counts
         for j in journal_list:
             total_journal_counts[j] += page_journal_counts.get(j, 0)
+            total_journal_counts_fa[j] += page_journal_counts_fa.get(j, 0)
+            total_journal_num_authors[j] += page_journal_num_authors.get(j, 0)
             total_journal_details[j].extend(page_journal_details[j])
 
         total_article_count += page_article_count
@@ -553,6 +593,10 @@ def scrape_profile_all_publications_requests(
             for journal, count in total_journal_counts.items():
                 if count > 0:
                     print(f"  {journal}: {count}")
+            print(" First author journal match counts (all pages):")
+            for journal, count in total_journal_counts_fa.items():
+                if count > 0:
+                    print(f"  {journal}: {count}")
         print("\n ===============================================================================\n")
 
     return (
@@ -564,6 +608,8 @@ def scrape_profile_all_publications_requests(
         cit_all,
         cit_5y,
         total_journal_counts,
+        total_journal_counts_fa,
+        total_journal_num_authors,
         total_journal_details,
         total_article_count,
         any_page
@@ -587,7 +633,9 @@ def scrape_profile_all_publications_offline(
     Optional[int],          # h_5y
     Optional[int],          # cit_all
     Optional[int],          # cit_5y
-    Dict[str, int],         # total journal_match_counts
+    Dict[str, int],         # total_journal_match_counts
+    Dict[str, int],         # total_journal_match_counts_fa
+    Dict[str, int],         # total_journal_num_authors
     Dict[str, List[str]],   # total_journal_details
     int,                    # total_article_count
     bool                    # any_page
@@ -602,6 +650,8 @@ def scrape_profile_all_publications_offline(
     cit_5y: Optional[int] = None
 
     total_journal_counts: Dict[str, int] = {j: 0 for j in journal_list}
+    total_journal_counts_fa: Dict[str, int] = {j: 0 for j in journal_list}
+    total_journal_num_authors: Dict[str, int] = {j: 0 for j in journal_list}
     total_journal_details: Dict[str, List[str]] = {j: [] for j in journal_list}
     total_article_count = 0
 
@@ -634,6 +684,8 @@ def scrape_profile_all_publications_offline(
             cit_all,
             cit_5y,
             page_journal_counts,
+            page_journal_counts_fa,
+            page_journal_num_authors,
             page_journal_details,
             page_article_count,
         ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
@@ -641,6 +693,8 @@ def scrape_profile_all_publications_offline(
         # accumulate journal counts, details and article counts
         for j in journal_list:
             total_journal_counts[j] += page_journal_counts.get(j, 0)
+            total_journal_counts_fa[j] += page_journal_counts_fa.get(j, 0)
+            total_journal_num_authors[j] += page_journal_num_authors.get(j, 0)
             total_journal_details[j].extend(page_journal_details[j])
 
         total_article_count += page_article_count
@@ -662,6 +716,10 @@ def scrape_profile_all_publications_offline(
         for journal, count in total_journal_counts.items():
             if count > 0:
                 print(f"  {journal}: {count}")
+        print(" First author journal match counts (all pages):")                
+        for journal, count in total_journal_counts_fa.items():
+            if count > 0:
+                print(f"  {journal}: {count}")                
         print("\n ===============================================================================\n")
 
     return (
@@ -673,6 +731,8 @@ def scrape_profile_all_publications_offline(
         cit_all,
         cit_5y,
         total_journal_counts,
+        total_journal_counts_fa,
+        total_journal_num_authors,
         total_journal_details,
         total_article_count,
         any_page
@@ -727,6 +787,8 @@ def fetch_and_cache_profile(
 
 def create_journal_summary(
     journal_counts: Dict[str, int],
+    journal_counts_fa: Dict[str, int],
+    journal_num_authors: Dict[str, int],
     journal_details: Dict[str, List[str]],
     journal_list: List[str],
 ) -> str:
@@ -735,11 +797,15 @@ def create_journal_summary(
 
     for journal in journal_list:
         count = journal_counts.get(journal, 0)
+        count_fa = journal_counts_fa.get(journal, 0)
+        num_authors = journal_num_authors.get(journal, 0)
         details = journal_details.get(journal, [])
 
         if count > 0:
-            # optional journal header (comment out if you want pure flat list)
-            summary_lines.append(f"{journal} ({count} article{'s' if count != 1 else ''}):")
+            summary_lines.append(f"Journal / Conference: {journal}")
+            summary_lines.append(f"Number of articles: {count}")   
+            summary_lines.append(f"Number of first author articles: {count_fa}")   
+            summary_lines.append(f"Average number of authors: {num_authors / count:.1f}")
 
             for detail in details:
                 # expected detail format: authors | title | journal_info
@@ -828,6 +894,8 @@ def process_profile(
                 cit_all,
                 cit_5y,
                 journal_counts,
+                journal_counts_fa,
+                journal_num_authors,
                 journal_details,
                 article_count,
                 info_found,
@@ -856,6 +924,8 @@ def process_profile(
                 cit_all,
                 cit_5y,
                 journal_counts,
+                journal_counts_fa,
+                journal_num_authors,
                 journal_details,
                 article_count,
                 info_found,
@@ -896,6 +966,15 @@ def process_profile(
         record.update(empty_record(journal_list))
         return record
     
+    average_num_authors = (
+        round(
+            sum(journal_num_authors.values()) / sum(journal_counts.values()),
+            1
+        )
+        if sum(journal_counts.values()) > 0
+        else 0.0
+    )
+    
     record.update({    
         "gs_name": gs_name or "",
         "gs_institution": gs_institution or "",
@@ -905,11 +984,15 @@ def process_profile(
         "h_index_all": h_all if h_all is not None else "",
         "h_index_5y": h_5y if h_5y is not None else "",
         "article_count": article_count if article_count is not None else "",
-        "journal_count_tot": sum(journal_counts.values())
+        "journal_count_tot": sum(journal_counts.values()),
+        "journal_count_tot_fa": sum(journal_counts_fa.values()),
+        "journal_average_num_authors": average_num_authors,
     })
 
     record["journal_summary"] = create_journal_summary(
         journal_counts=journal_counts,
+        journal_counts_fa=journal_counts_fa,
+        journal_num_authors=journal_num_authors,
         journal_details=journal_details,
         journal_list=journal_list)
     
@@ -934,15 +1017,18 @@ def empty_record(
         "gs_name": NOT_FOUND_STRING,
         "gs_institution": NOT_FOUND_STRING,
         "gs_research_areas": NOT_FOUND_STRING,
-        "citations_all": NOT_FOUND_STRING,
-        "citations_5y": NOT_FOUND_STRING,
-        "h_index_all": NOT_FOUND_STRING,
-        "h_index_5y": NOT_FOUND_STRING,
-        "article_count": NOT_FOUND_STRING,
-        "journal_count_tot": NOT_FOUND_STRING,
+        "citations_all": NOT_FOUND_NAN,
+        "citations_5y": NOT_FOUND_NAN,
+        "h_index_all": NOT_FOUND_NAN,
+        "h_index_5y": NOT_FOUND_NAN,
+        "article_count": NOT_FOUND_NAN,
+        "journal_count_tot": NOT_FOUND_NAN,
+        "journal_count_tot_fa": NOT_FOUND_NAN,
+        "journal_average_num_authors": NOT_FOUND_NAN,
     }
+    record["journal_summary"] = NOT_FOUND_STRING
     for j in journal_list:
-        record[j] = NOT_FOUND_STRING
+        record[j] = NOT_FOUND_NAN
     return record
 
 # =========================
@@ -1320,6 +1406,8 @@ def main():
         "h_index_5y": "H-index (5y)",
         "article_count": "Total Number of Publications",
         "journal_count_tot": "Total Number of Publications in Journal List",
+        "journal_count_tot_fa": "Total Number of First Author Publications in Journal List",
+        "journal_average_num_authors": "Average Number of Authors in Journal List Publications",
         "journal_summary": "Publication Summary",        
     }
 
