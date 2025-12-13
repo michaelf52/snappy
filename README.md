@@ -1,7 +1,7 @@
 # snappy
 The Super Neat Academic Profile Parser in Python
 
-Written by Michael P Kirkpatrick
+Written by Michael Kirkpatrick
 
 # Usage:
 Install all python libraries as required. 
