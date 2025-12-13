@@ -164,9 +164,9 @@ def iter_scholar_pages_requests(
     session: requests.Session,
     pagesize: int = 100,
     max_pages: int = 50,
-    delay: float = 8.0,              # typical delay between successful pages
-    max_block_retries: int = 5,      # how many times to retry a blocked page
-    block_backoff_base: float = 10.0 # starting backoff in seconds
+    delay: float = 8.0,                                     # typical delay between successful pages
+    max_block_retries: int = MAX_BLOCK_RETRIES_DEFAULT,     # how many times to retry a blocked page
+    block_backoff_base: float = 10.0                        # starting backoff in seconds
 ) -> Generator[str, None, None]:
 
     headers = {
@@ -197,7 +197,7 @@ def iter_scholar_pages_requests(
                     return
                 backoff = block_backoff_base * (2 ** (block_attempts - 1))
                 print(f"  Backing off for {backoff:.1f} seconds before retrying...")
-                time.sleep(backoff)
+                random_sleep(backoff)
                 continue
 
             # deal with status-based blocking
@@ -222,7 +222,6 @@ def iter_scholar_pages_requests(
             break
 
         # sanity check - parse the publications table to see if we have rows
-        
         soup = BeautifulSoup(html, "html.parser")
         table_pubs = soup.find("table", id="gsc_a_t")
         if not table_pubs:
@@ -431,8 +430,14 @@ def scrape_it(
                 counter = 0
                 for a in author_list:
                     counter += 1
-                    # extract the surname (last word) from the author name
-                    author_surname = a.split(" ")[-1]
+                    
+                    # extract initials (first letters) from the author name
+                    author_initials = a.split(" ")[0]
+                    
+                    # surname is the substring excluding the initials
+                    author_surname = a[len(author_initials):].strip()
+                    
+                    print(f"   Checking author: {a} (surname: {author_surname}, initials: {author_initials})")
                     
                     if author_surname.lower() == candidate_surname.lower():
                         print(f"  Matched author surname: {author_surname} in candidate name {name}")
@@ -475,151 +480,9 @@ def scrape_it(
 
 # ========================
 
-# step through all GS pages and scrape profile info
+# step through all GS pages and scrape profile info 
 
-def scrape_profile_all_publications_requests(
-    profile_url: str,
-    journal_list: List[str],
-    normalized_journal_titles: Dict[str, str],
-    session: requests.Session,
-    pagesize: int = 100,
-    max_pages: int = 50,
-    delay: float = 8.0,
-    max_block_retries: int = MAX_BLOCK_RETRIES_DEFAULT,
-    block_backoff_base: float = 10.0,
-    cache_html: bool = False,
-    html_dir: str = "./html",
-) -> Tuple[
-    Optional[str],          # name
-    Optional[str],          # institution
-    List[str],              # research_areas
-    Optional[int],          # h_all
-    Optional[int],          # h_5y
-    Optional[int],          # cit_all
-    Optional[int],          # cit_5y
-    Dict[str, int],         # total_journal_match_counts
-    Dict[str, int],         # total_journal_match_counts_fa
-    Dict[str, int],         # total_journal_num_authors
-    Dict[str, List[str]],   # total_journal_details
-    int,                    # total_article_count
-    bool                    # any_page
-]:
-    global FETCH_ONLY_MODE
-    global BLOCKING_SUSPECTED
-
-    name: Optional[str] = None
-    institution: Optional[str] = None
-    research_areas: List[str] = []
-    h_all: Optional[int] = None
-    h_5y: Optional[int] = None
-    cit_all: Optional[int] = None
-    cit_5y: Optional[int] = None
-
-    total_journal_counts: Dict[str, int] = {j: 0 for j in journal_list}
-    total_journal_counts_fa: Dict[str, int] = {j: 0 for j in journal_list}
-    total_journal_num_authors: Dict[str, int] = {j: 0 for j in journal_list}
-    total_journal_details: Dict[str, List[str]] = {j: [] for j in journal_list}
-    total_article_count = 0
-
-    any_page = False
-    user_id = user_id_from_url(profile_url) or "UNKNOWN"
-
-    # set up cache directory if needed
-    if cache_html:
-        out_dir = Path(html_dir)
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-    for page_idx, html in enumerate(
-        iter_scholar_pages_requests(
-            profile_url,
-            session,
-            pagesize=pagesize,
-            max_pages=max_pages,
-            delay=delay,
-            max_block_retries=max_block_retries,
-            block_backoff_base=block_backoff_base,
-        )
-    ):
-        any_page = True
-        
-        if cache_html:
-            page_num = page_idx + 1
-            out_path = Path(html_dir) / f"{user_id}_p{page_num}.htm"
-            with open(out_path, "w", encoding="utf-8", errors="replace") as f:
-                f.write(html)
-            print(f"  Cached HTML for {user_id} page {page_num} -> {out_path}")
-
-        # scrape the page
-        (
-            name,
-            institution,
-            research_areas,
-            h_all,
-            h_5y,
-            cit_all,
-            cit_5y,
-            page_journal_counts,
-            page_journal_counts_fa,
-            page_journal_num_authors,
-            page_journal_details,
-            page_article_count,
-        ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
-
-        # accumulate journal counts, details and article counts
-        for j in journal_list:
-            total_journal_counts[j] += page_journal_counts.get(j, 0)
-            total_journal_counts_fa[j] += page_journal_counts_fa.get(j, 0)
-            total_journal_num_authors[j] += page_journal_num_authors.get(j, 0)
-            total_journal_details[j].extend(page_journal_details[j])
-
-        total_article_count += page_article_count
-        
-    if not any_page:
-        print(f"\n Warning - No publication pages scraped for URL: {profile_url}")
-        # likely blocked or unreachable
-        BLOCKING_SUSPECTED = True        
-        raise GSBlockedError(f"Blocked or no pages for {profile_url}")
-    else:
-        if not FETCH_ONLY_MODE:
-            print("\n === Results aggregated over ALL publications pages ===\n")
-            print(f" Name: {name}")
-            print(f" Institution: {institution}")
-            if research_areas:
-                print(" Research areas: " + ", ".join(research_areas))
-            print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
-            print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
-            print(f" Total articles (all pages): {total_article_count}")
-            print(" Journal match counts (all pages):")
-            for journal, count in total_journal_counts.items():
-                if count > 0:
-                    print(f"  {journal}: {count}")
-            print(" First author journal match counts (all pages):")
-            for journal, count in total_journal_counts_fa.items():
-                if count > 0:
-                    print(f"  {journal}: {count}")
-        print("\n ===============================================================================\n")
-
-    return (
-        name,
-        institution,
-        research_areas,
-        h_all,
-        h_5y,
-        cit_all,
-        cit_5y,
-        total_journal_counts,
-        total_journal_counts_fa,
-        total_journal_num_authors,
-        total_journal_details,
-        total_article_count,
-        any_page
-    )
-
-# =========================
-
-# step through all GS pages and scrape profile info (offline mode)
-
-def scrape_profile_all_publications_offline(
+def scrape_profile_all_publications(
     profile_url: str,
     journal_list: List[str],
     normalized_journal_titles: Dict[str, str],
@@ -704,7 +567,7 @@ def scrape_profile_all_publications_offline(
     if not any_page:
         print(f"\n Warning - No cached HTML pages found for user_id={user_id} in {html_dir}\n")
     else:
-        print("\n === Results aggregated over ALL cached pages (offline) ===\n")
+        print(" === Results aggregated over ALL cached pages ===\n")
         print(f" Name: {name}")
         print(f" Institution: {institution}")
         if research_areas:
@@ -745,41 +608,63 @@ def scrape_profile_all_publications_offline(
 def fetch_and_cache_profile(
     candidate: tuple,
     session: requests.Session,
-    pagesize: int,
-    html_dir: str,
-) -> None:
+    pagesize: int = 100,
+    max_pages: int = 50,
+    delay: float = 8.0,    
+    max_block_retries: int = MAX_BLOCK_RETRIES_DEFAULT,
+    block_backoff_base: float = 10.0,
+    html_dir: str = "./html",
+) -> bool:
 
-    print(f"\n === Fetch-only: candidate {candidate.candidate_id}: {candidate.candidate_name} ===")
+    
+    print(f" === Fetch and cache: candidate {candidate.candidate_id}: {candidate.candidate_name} ===")
 
     url = candidate.gs_url
 
     if pd.isna(url):
-        print("\n  Warning - Empty Google Scholar Link, skipping profile.\n")
-        print("\n ===============================================================================\n")
-        return
+        print("\n  Warning - Empty Google Scholar Link, skipping profile.")
+        return False
 
     url_str = str(url).strip()
-    print(f"  Attempting to fetch and cache Google Scholar URL: {url_str}")
+    print(f"\n  Attempting to fetch and cache Google Scholar URL: {url_str}")
 
-    sanitized = sanitize_url(url_str)
-    if sanitized is None:
+    sanitized_url = sanitize_url(url_str)
+    if sanitized_url is None:
         print("\n  Warning - Could not sanitize URL, skipping profile.")
-        print("\n ===============================================================================\n")
-        return
+        return False
 
-    # set up dummy journal list and normalized titles to satisfy function signature
-    dummy_journal_list: List[str] = []
-    dummy_normalized: Dict[str, str] = {}
+    any_page = False
+    user_id = user_id_from_url(sanitized_url) or "UNKNOWN"
 
-    _ = scrape_profile_all_publications_requests(
-        sanitized,
-        dummy_journal_list,
-        dummy_normalized,
-        session,
-        pagesize=pagesize,
-        cache_html=True,
-        html_dir=html_dir,
-    )
+    # set up cache directory
+    out_dir = Path(html_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for page_idx, html in enumerate(
+        iter_scholar_pages_requests(
+            sanitized_url,
+            session,
+            pagesize=pagesize,
+            max_pages=max_pages,
+            delay=delay,
+            max_block_retries=max_block_retries,
+            block_backoff_base=block_backoff_base,
+        )
+    ):
+        any_page = True
+        
+        page_num = page_idx + 1
+        out_path = Path(html_dir) / f"{user_id}_p{page_num}.htm"
+        with open(out_path, "w", encoding="utf-8", errors="replace") as f:
+            f.write(html)
+        print(f"  Cached HTML for {user_id} page {page_num} -> {out_path}")
+
+    if not any_page:
+        print(f"\n Warning - No publication pages cached for URL: {sanitized_url}")
+        # likely blocked or unreachable
+        raise GSBlockedError(f"Blocked or no pages for {sanitized_url}")
+        
+    return True
 
 # =========================
 
@@ -829,7 +714,6 @@ def create_journal_summary(
 
     return "\n".join(summary_lines)
 
-
 # =========================
 
 # main driver to process a profile
@@ -838,18 +722,13 @@ def process_profile(
     candidate: tuple,
     journal_list: List[str],
     normalized_journal_titles: Dict[str, str],
-    session: requests.Session,
-    pagesize: int = 100,
-    cache_html: bool = False,
-    html_dir: str = "./html",
-    delay: float = 8.0,
+    html_dir: str,
 ) -> Dict[str, object] | None:
 
-    global BLOCKING_SUSPECTED
     global OFFLINE_MODE
     info_found = False
     
-    print(f"\n === Processing profile for candidate {candidate.candidate_id}: {candidate.candidate_name} ===\n")
+    print(f" === Processing profile for candidate {candidate.candidate_id}: {candidate.candidate_name} ===\n")
         
     url = candidate.gs_url
     
@@ -872,86 +751,45 @@ def process_profile(
     }
             
     if pd.isna(url):
-        print("\n Warning - Empty Google Scholar Link, skipping profile.")
+        print(" Warning - Empty Google Scholar Link, skipping profile.")
         record.update(empty_record(journal_list))
         return record
             
     url = sanitize_url(str(url).strip())
     if url is None:
-        print("\n Warning - Could not sanitize URL, skipping profile.")
+        print(" Warning - Could not sanitize URL, skipping profile.")
         record.update(empty_record(journal_list))
         return record
     
-    if OFFLINE_MODE:
-        try:
-            print(" Offline mode: parsing cached HTML only (no web requests).")
-            (
-                gs_name,
-                gs_institution,
-                gs_research_areas,
-                h_all,
-                h_5y,
-                cit_all,
-                cit_5y,
-                journal_counts,
-                journal_counts_fa,
-                journal_num_authors,
-                journal_details,
-                article_count,
-                info_found,
-            ) = scrape_profile_all_publications_offline(
-                url,
-                journal_list,
-                normalized_journal_titles,
-                html_dir=html_dir,
-            )
-        except Exception as e:
-            print(f" Detected error while processing cached HTML for {url}.")
-            print(f" Details: {e}")
-            record.update(empty_record(journal_list))
-            return record
-
-    else:
-
-        try:
-            print(f" Attempting to scrape info from Google Scholar URL: {url}")
-            (
-                gs_name,
-                gs_institution,
-                gs_research_areas,
-                h_all,
-                h_5y,
-                cit_all,
-                cit_5y,
-                journal_counts,
-                journal_counts_fa,
-                journal_num_authors,
-                journal_details,
-                article_count,
-                info_found,
-            ) = scrape_profile_all_publications_requests(
-                url,
-                journal_list,
-                normalized_journal_titles,
-                session,
-                pagesize=pagesize,
-                cache_html=cache_html,
-                html_dir=html_dir,
-                delay=delay,
-            )
-        except GSBlockedError as e:
-            BLOCKING_SUSPECTED = True
-            print(f" Detected probable Google Scholar block while processing {url}.")
-            print(f" Details: {e}")
-            record.update(empty_record(journal_list))
-            return record
-        except Exception as e:
-            print(f" Detected error while processing {url}.")
-            print(f" Details: {e}")
-            record.update(empty_record(journal_list))
-            return record
+    try:
+        (
+            gs_name,
+            gs_institution,
+            gs_research_areas,
+            h_all,
+            h_5y,
+            cit_all,
+            cit_5y,
+            journal_counts,
+            journal_counts_fa,
+            journal_num_authors,
+            journal_details,
+            article_count,
+            info_found,
+        ) = scrape_profile_all_publications(
+            profile_url=url,
+            journal_list=journal_list,
+            normalized_journal_titles=normalized_journal_titles,
+            html_dir=html_dir,
+        )
         
-    if (not info_found):
+    except Exception as e:
+        print(f" ERROR  - Detected error while processing cached HTML for {url}.")
+        print(f" Details: {e}")
+        record.update(empty_record(journal_list))
+        return record
+
+    if not info_found:
         print(f" Warning - No scrapable pages found for URL: {url}")
         record.update(empty_record(journal_list))
         return record
@@ -1230,14 +1068,12 @@ def main():
     
     # html caching
     html_dir = rel_path + "html"
-    cache_html = False
 
     if OFFLINE_MODE:
         # in offline mode we never write HTML, we just read from html_dir
         os.makedirs(html_dir, exist_ok=True)
         print(f"\n Offline mode: I will use cached HTML pages under: {html_dir}")
     else:
-        cache_html = True
         os.makedirs(html_dir, exist_ok=True)
         print(f" Normal or Fetch-only mode: I will cache HTML pages under: {html_dir}")
 
@@ -1293,80 +1129,95 @@ def main():
                     typical_delay = 8.0
                     print(" Sorry. Second law of thermodynamics forbids going backwards in time.")
         print(f" Using a typical delay of {typical_delay} seconds between requests.\n")
+        
+        # get max block retries
+        max_block_retries_str = input(
+            f" Enter the maximum number of retries if blocking is suspected (default {MAX_BLOCK_RETRIES_DEFAULT}):\n "
+        )
+        if not max_block_retries_str.strip():
+            max_block_retries = MAX_BLOCK_RETRIES_DEFAULT
+        elif max_block_retries_str.strip().isdigit():
+            max_block_retries = int(max_block_retries_str.strip())
+        else:
+            print(f" Invalid input, defaulting to {MAX_BLOCK_RETRIES_DEFAULT}.")
+            max_block_retries = MAX_BLOCK_RETRIES_DEFAULT
+            
     else:
         typical_delay = 0.01  # minimal delay in offline mode
             
-    # start scraping
-    print("\n Now scraping the web pages for key research metrics...\n")
+    # start fetching and caching
+    print("\n Attempting to fetch and cache all web pages...\n")
     print("\n ===============================================================================\n")
 
     session: Optional[requests.Session] = None
     if not OFFLINE_MODE:
         session = requests.Session()
 
+        for candidate in df_hr.itertuples(index=False):
+            
+            try:
+                # fetch and cache the pages
+                if fetch_and_cache_profile(
+                    candidate=candidate,
+                    session=session,
+                    pagesize=100,
+                    max_pages=50,
+                    delay=typical_delay,
+                    max_block_retries=max_block_retries,
+                    html_dir=html_dir,
+                ):
+                    print(f"\n Successfully fetched and cached pages for candidate {candidate.candidate_id}.\n")
+                    print(" ================================================================\n")
+                    random_sleep(typical_delay=typical_delay)
+                
+                else: 
+                    print(f"\n Unable to fetch pages for candidate {candidate.candidate_id}.\n")
+                    print(" ================================================================\n")
+                    
+            except GSBlockedError as e:
+                BLOCKING_SUSPECTED = True
+                # give user the option to continue or stop
+                print(f"\n I suspect that Google is blocking web requests. Would you like to continue or stop?")
+                print(f" Note that, if you stop now, you can restart from this candidate number next time.\n Then do a final run in OFFLINE mode to capture all candidates in the spreadsheet.\n")
+                answer = input(" Enter 'c' to continue, 's' to stop processing: ").strip().lower()
+                if answer == "c":
+                    print(f"\n Continuing processing... but if this happens again soon I strongly suggest you stop and come back later.\n")
+                    BLOCKING_SUSPECTED = False
+                    time.sleep(5.0)  # brief pause before continuing
+                    continue
+                else:
+                    print(f"\n Stopping further processing due to suspected blocking by Google.")
+                    print(f" Please try again in an hour or two.")
+                    print(f"\n Bye!\n")
+                    print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
+                    break
+
+        if FETCH_ONLY_MODE:
+            print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n") 
+            print(" Fetch-only mode complete.")
+            print(" Cached HTML files (if any) are in the 'html' directory.")
+            print(" You can now rerun Snappy in OFFLINE mode to parse them without contacting Google Scholar.\n")
+            print(" Bye!\n")       
+            return
+    
+    # start scraping
+    print("\n Now scraping the web pages for key research metrics...\n")
+    print("\n ===============================================================================\n")
     records: List[Dict[str, object]] = []
     
     for candidate in df_hr.itertuples(index=False):
-        
-        if FETCH_ONLY_MODE:
-            # just fetch and cache HTML, no parsing / records
-            if session is None:
-                print(" ERROR - Session is None in fetch-only mode. This should not happen.")
-                break
-
-            fetch_and_cache_profile(
-                candidate=candidate,
-                session=session,
-                pagesize=100,
-                html_dir=html_dir,
-            )
-
+        record = process_profile(
+            candidate=candidate,
+            journal_list=journal_list,
+            normalized_journal_titles=normalized_journal_titles,
+            html_dir=html_dir,
+        )
+        if record is not None:
+            records.append(record)
         else:
-            record = process_profile(
-                candidate,
-                journal_list,
-                normalized_journal_titles,
-                session,
-                pagesize=100,
-                cache_html=cache_html,
-                html_dir=html_dir,
-                delay=typical_delay,
-            )
-            if record is not None:
-                records.append(record)
-            else:
-                print(f" Warning - No record returned for candidate {candidate.candidate_id}.")
-                print(f"\n ===============================================================================\n")
-                if BLOCKING_SUSPECTED:
-                    # give user the option to continue or stop
-                    print(f"\n I suspect that Google is blocking web requests. Would you like to continue or stop?")
-                    print(f" Note that, if you stop now, you can restart from this candidate number next time.\n Then do a final run in OFFLINE mode to capture all candidates in the spreadsheet.\n")
-                    answer = input(" Enter 'c' to continue, 's' to stop processing: ").strip().lower()
-                    if answer == "c":
-                        print(f"\n Continuing processing... but if this happens again soon I strongly suggest you stop and come back later.\n")
-                        BLOCKING_SUSPECTED = False
-                        time.sleep(5.0)  # brief pause before continuing
-                        continue
-                    else:
-                        print(f"\n Stopping further processing due to suspected blocking by Google.")
-                        print(f" Please try again in an hour or two.")
-                        print(f"\n Bye!\n")
-                        print(" ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n")
-                        break
+            print(f" Warning - No record returned for candidate {candidate.candidate_id}.")
+            print(f"\n ===============================================================================\n")
 
-        # random delay between profiles to emulate human behaviour and reduce chance of blocking
-        if not OFFLINE_MODE and not FETCH_ONLY_MODE:
-            random_sleep(typical_delay=typical_delay)
-        elif FETCH_ONLY_MODE:
-            random_sleep(typical_delay=typical_delay)
-
-    if FETCH_ONLY_MODE:
-        print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n") 
-        print(" Fetch-only mode complete.")
-        print(" Cached HTML files (if any) are in the 'html' directory.")
-        print(" You can now rerun Snappy in OFFLINE mode to parse them without contacting Google Scholar.\n")
-        print(" Bye!\n")       
-        return
 
     if not records:
         print(" No records to write (no profiles scraped). Bye!\n")
