@@ -252,10 +252,11 @@ def iter_scholar_pages_requests(
 
 # I love BeautifulSoup :)~
 
-def scrape_it(html: str, 
-              journal_list: List[str], 
-              normalized_journal_titles: Dict[str, str],
-              page_idx: int,
+def scrape_it(
+    html: str,
+    journal_list: List[str],
+    normalized_journal_titles: Dict[str, str],
+    page_idx: int,
 ) -> Tuple[
     Optional[str],          # name
     Optional[str],          # institution
@@ -266,7 +267,7 @@ def scrape_it(html: str,
     Optional[int],          # cit_5y
     Dict[str, int],         # journal_match_counts
     Dict[str, List[str]],   # journal_match_details
-    int,                     # article_count
+    int,                    # article_count
 ]:
     global FETCH_ONLY_MODE
     soup = BeautifulSoup(html, "html.parser")
@@ -274,22 +275,31 @@ def scrape_it(html: str,
     # ---------------------------------------------------------------------
     # name tag: <div id="gsc_prf_in">Name</div>
     # ---------------------------------------------------------------------
-    name = None
+    name: Optional[str] = None
     name_div = soup.find("div", id="gsc_prf_in")
     if name_div:
         name = name_div.get_text(strip=True)
+
     if name:
         print(f"\n Scraping profile page {page_idx + 1} for {name}")
     else:
-        print(f"\n Scraping profile {page_idx + 1} for 'UNKNOWN'")
+        print(f"\n Scraping profile page {page_idx + 1} for 'UNKNOWN'")
 
+    # defaults for front matter 
+    institution: Optional[str] = None
+    research_areas: Optional[List[str]] = None
+    h_all: Optional[int] = None
+    h_5y: Optional[int] = None
+    cit_all: Optional[int] = None
+    cit_5y: Optional[int] = None
+
+    # get the front matter data only on the first page
+    # ---------------------------------------------------------------------
+    # institution / affiliation tag:
+    #   <div class="gsc_prf_il">The University of Excellence and other Buzzwords</div>
+    # ---------------------------------------------------------------------
     if page_idx == 0:
-        # get the front matter data only on the first page
-        # ---------------------------------------------------------------------
-        # institution / affiliation tag:
-        #   <div class="gsc_prf_il">The University of Excellence and other Buzzwords</div>
-        # ---------------------------------------------------------------------
-        institution: Optional[str] = None
+        # institution
         inst_divs = soup.find_all("div", class_="gsc_prf_il")
         if inst_divs:
             institution = inst_divs[0].get_text(strip=True)
@@ -302,13 +312,15 @@ def scrape_it(html: str,
         #       <a class="gsc_prf_inta">Area 2</a>
         #   </div>
         # ---------------------------------------------------------------------
-        research_areas: List[str] = []
+        ra: List[str] = []
         int_div = soup.find("div", id="gsc_prf_int")
         if int_div:
             for a in int_div.find_all("a", class_="gsc_prf_inta"):
                 text = a.get_text(strip=True)
                 if text:
-                    research_areas.append(text)
+                    ra.append(text)
+        research_areas = ra
+
         if research_areas:
             print(" Research areas: " + ", ".join(research_areas))
         else:
@@ -320,11 +332,6 @@ def scrape_it(html: str,
         #   rows for "Citations", "h-index", "i10-index"
         #   columns: [label, All, Since YYYY]
         # ---------------------------------------------------------------------
-        h_all: Optional[int] = None
-        h_5y: Optional[int] = None
-        cit_all: Optional[int] = None
-        cit_5y: Optional[int] = None
-
         table = soup.find("table", id="gsc_rsb_st")
         if table:
             for row in table.find_all("tr"):
@@ -334,35 +341,27 @@ def scrape_it(html: str,
 
                 label = cells[0].get_text(strip=True).lower()
 
-                # Citations row
                 if "citations" in label:
                     if len(cells) >= 2:
-                        text_all = cells[1].get_text(strip=True)
                         try:
-                            cit_all = int(text_all)
+                            cit_all = int(cells[1].get_text(strip=True))
                         except ValueError:
                             cit_all = None
-
                     if len(cells) >= 3:
-                        text_since = cells[2].get_text(strip=True)
                         try:
-                            cit_5y = int(text_since)
+                            cit_5y = int(cells[2].get_text(strip=True))
                         except ValueError:
                             cit_5y = None
 
-                # h-index row
-                if "h-index" in label:
+                elif "h-index" in label:
                     if len(cells) >= 2:
-                        text_all = cells[1].get_text(strip=True)
                         try:
-                            h_all = int(text_all)
+                            h_all = int(cells[1].get_text(strip=True))
                         except ValueError:
                             h_all = None
-
                     if len(cells) >= 3:
-                        text_5y = cells[2].get_text(strip=True)
                         try:
-                            h_5y = int(text_5y)
+                            h_5y = int(cells[2].get_text(strip=True))
                         except ValueError:
                             h_5y = None
 
@@ -374,8 +373,8 @@ def scrape_it(html: str,
     # journal matching in publications table
     # <table id="gsc_a_t">...</table>
     # ---------------------------------------------------------------------
-    journal_match_counts: Dict[str, int] = {journal: 0 for journal in journal_list}
-    journal_match_details: Dict[str, List[str]] = {journal: [] for journal in journal_list}
+    journal_match_counts: Dict[str, int] = {j: 0 for j in journal_list}
+    journal_match_details: Dict[str, List[str]] = {j: [] for j in journal_list}
     article_count = 0
 
     table_pubs = soup.find("table", id="gsc_a_t")
@@ -387,7 +386,6 @@ def scrape_it(html: str,
 
             td = cells[0]
             gray_elems = td.find_all("div", class_="gs_gray")
-
             # expect at least 2 gs_gray divs:
             # [0] authors
             # [1] journal info
@@ -395,7 +393,7 @@ def scrape_it(html: str,
                 continue
 
             article_count += 1
-            
+
             raw_info = gray_elems[1].get_text(strip=True)
 
             # extract the journal title from the raw info string
@@ -421,19 +419,27 @@ def scrape_it(html: str,
                 full_entry = f"{authors} | {title} | {journal_info}"
                 journal_match_details[matched_journal].append(full_entry)
 
-                if not FETCH_ONLY_MODE:                  
-                    print(f" Total articles on this page: {article_count}")
-                    print(" Journal match counts on this page:")    
-                    for journal, count in journal_match_counts.items():
-                        if count > 0:
-                            print(f"  {journal}: {count}")
+    if not FETCH_ONLY_MODE:
+        print(f" Total articles on this page: {article_count}")
+        print(" Journal match counts on this page:")
+        for j, c in journal_match_counts.items():
+            if c > 0:
+                print(f"  {j}: {c}")
 
     print("\n ------------------------------------------\n")
 
-    if page_idx == 0:
-        return name, institution, research_areas, h_all, h_5y, cit_all, cit_5y, journal_match_counts, journal_match_details, article_count
-    else:
-        return journal_match_counts, journal_match_details, article_count
+    return (
+        name,
+        institution,
+        research_areas,
+        h_all,
+        h_5y,
+        cit_all,
+        cit_5y,
+        journal_match_counts,
+        journal_match_details,
+        article_count,
+    )
 
 # ========================
 
@@ -507,27 +513,19 @@ def scrape_profile_all_publications_requests(
                 f.write(html)
             print(f"  Cached HTML for {user_id} page {page_num} -> {out_path}")
 
-        if page_idx == 0:
-            # first page - get full profile info
-            (
-                name,
-                institution,
-                research_areas,
-                h_all,
-                h_5y,
-                cit_all,
-                cit_5y,
-                page_journal_counts,
-                page_journal_details,
-                page_article_count,
-            ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
-        else:
-            # subsequent pages - only get journal and article counts
-            (
-                page_journal_counts,
-                page_journal_details,                
-                page_article_count,
-            ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)
+        # scrape the page
+        (
+            name,
+            institution,
+            research_areas,
+            h_all,
+            h_5y,
+            cit_all,
+            cit_5y,
+            page_journal_counts,
+            page_journal_details,
+            page_article_count,
+        ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
 
         # accumulate journal counts, details and article counts
         for j in journal_list:
@@ -626,27 +624,19 @@ def scrape_profile_all_publications_offline(
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             html = f.read()
 
-        if page_idx == 0:
-            # first page - get full profile info
-            (
-                name,
-                institution,
-                research_areas,
-                h_all,
-                h_5y,
-                cit_all,
-                cit_5y,
-                page_journal_counts,
-                page_journal_details,
-                page_article_count,
-            ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
-        else:
-            # subsequent pages - only get journal and article counts
-            (
-                page_journal_counts,
-                page_journal_details,
-                page_article_count,
-            ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)
+        # scrape the page
+        (
+            name,
+            institution,
+            research_areas,
+            h_all,
+            h_5y,
+            cit_all,
+            cit_5y,
+            page_journal_counts,
+            page_journal_details,
+            page_article_count,
+        ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
 
         # accumulate journal counts, details and article counts
         for j in journal_list:
