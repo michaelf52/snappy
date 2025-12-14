@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import sys
 import webbrowser
 import time
 from pathlib import Path
@@ -18,11 +19,15 @@ import argparse
 
 # global constants and variables
 
+FETCH_ONLY_MODE = False
+OFFLINE_MODE = False
+NORMAL_MODE = True
+DEBUG_MODE = False
+
 PUNCT = str.maketrans("", "", string.punctuation)
 MAX_BLOCK_RETRIES_DEFAULT = 0
 BLOCKING_SUSPECTED = False
-FETCH_ONLY_MODE = False
-OFFLINE_MODE = False
+
 NOT_FOUND_STRING = ""
 NOT_FOUND_NAN = float('nan')
 
@@ -31,7 +36,11 @@ NOT_FOUND_NAN = float('nan')
 # =========================
 
 class GSBlockedError(Exception):
-    '''Raised when those Google yahoos appear to be blocking requests.'''
+    """Raised when those Google yahoos appear to be blocking requests."""
+    pass
+
+class AuthorMatchError(RuntimeError):
+    """Raised when no authors in listmatch the candidate's Google Scholar name."""
     pass
 
 # =========================
@@ -104,6 +113,67 @@ def extract_journal_name(raw_info: str) -> str:
     if m:
         return m.group(1).strip()
     return s  # fallback: whole string if no match
+
+# ========================
+
+# compare author name to candidate name
+# candidate name is assumed to be full name format "Firstname Middlename Surname"
+# author name is assumed to be in "Initials Surname" format
+
+def compare_initialed_name_with_full_name(
+    initialed_name: str,
+    full_name: str
+) -> bool:
+    
+    global DEBUG_MODE
+    
+    if DEBUG_MODE: print(f"\n Comparing initialed name '{initialed_name}' with full name '{full_name}'")
+    
+    # decompose initialed name
+    initialed_name_parts = initialed_name.strip().split(" ")
+    
+    if len(initialed_name_parts) >= 2:    
+        initialed_name_initials = initialed_name_parts[0]
+        initialed_name_surname = " ".join(initialed_name_parts[1:])
+    else:
+        initialed_name_initials = ""
+        initialed_name_surname = initialed_name_parts[0]
+
+    # decompose full name
+    full_name_parts = full_name.strip().split(" ")    
+    
+    if len(full_name_parts) >= 2:
+        # initial assumption that this is not a double barrelled surname
+        if DEBUG_MODE: print(f" First stab at surname from full name: {full_name_parts[-1]}")
+        full_name_surname = full_name_parts[-1]
+        # full name initials are the first letters of all parts
+        full_name_initials = ""
+        for part in full_name_parts[:-1]:
+            if DEBUG_MODE: print(f"  Full name part: {part}, initial: {part[0]}")
+            if part[0] != part[0].upper():
+                if DEBUG_MODE: print(f"   Initial '{part[0]}' is not uppercase => add it to the surname.")
+                full_name_surname = part + " " + full_name_surname
+            else:
+                if DEBUG_MODE: print(f"   Initial '{part[0]}' is uppercase => add it to the intials string.")
+                full_name_initials += part[0]
+    else:
+        full_name_initials = ""
+        full_name_surname = full_name_parts[0]       
+        
+    # compare surnames
+    if DEBUG_MODE: print(f"  Comparing surnames: '{initialed_name_surname}' with '{full_name_surname}'")
+    if initialed_name_surname.lower() != full_name_surname.lower():
+        if DEBUG_MODE: print(f"  Return False <= Surnames do not match: '{initialed_name_surname}' != '{full_name_surname}'")
+        return False
+    
+    # compare initials
+    if DEBUG_MODE: print(f"  Comparing initials: '{initialed_name_initials}' with '{full_name_initials}'")
+    if initialed_name_initials != full_name_initials:
+        if DEBUG_MODE: print(f"  Return False <= Initials do not match: '{initialed_name_initials}' != '{full_name_initials}'")
+        return False
+
+    if DEBUG_MODE: print(f"  Return True <=  Names match!")
+    return True
 
 # =========================
 
@@ -271,18 +341,20 @@ def scrape_it(
     int,                    # article_count
 ]:
     global FETCH_ONLY_MODE
+    global DEBUG_MODE
+    
     soup = BeautifulSoup(html, "html.parser")
 
     # ---------------------------------------------------------------------
     # name tag: <div id="gsc_prf_in">Name</div>
     # ---------------------------------------------------------------------
-    name: Optional[str] = None
+    candidate_gs_name: Optional[str] = None
     name_div = soup.find("div", id="gsc_prf_in")
     if name_div:
-        name = name_div.get_text(strip=True)
+        candidate_gs_name = name_div.get_text(strip=True)
 
-    if name:
-        print(f"\n Scraping profile page {page_idx + 1} for {name}")
+    if candidate_gs_name:
+        print(f"\n Scraping profile page {page_idx + 1} for {candidate_gs_name}")
     else:
         print(f"\n Scraping profile page {page_idx + 1} for 'UNKNOWN'")
 
@@ -379,7 +451,6 @@ def scrape_it(
     journal_num_authors: Dict[str, int] = {j: 0 for j in journal_list}
     journal_match_details: Dict[str, List[str]] = {j: [] for j in journal_list}
     article_count = 0
-    candidate_surname = name.split(" ")[-1]
 
     table_pubs = soup.find("table", id="gsc_a_t")
     if table_pubs and journal_list:
@@ -423,30 +494,43 @@ def scrape_it(
                 # create a list of authors by separating on commas
                 author_list = [a.strip() for a in authors.split(",") if a.strip()]
                 
-                print(author_list)
-                
-                # compare each author to the candidate's name and highlight matches
+                if DEBUG_MODE: print(f" Author list: {author_list}")
+                                
+                # determine which authors match the candidate's name
                 highlighted_author_list = []
                 counter = 0
+                count_highlighted = 0
                 for a in author_list:
                     counter += 1
                     
-                    # extract initials (first letters) from the author name
-                    author_initials = a.split(" ")[0]
-                    
-                    # surname is the substring excluding the initials
-                    author_surname = a[len(author_initials):].strip()
-                    
-                    print(f"   Checking author: {a} (surname: {author_surname}, initials: {author_initials})")
-                    
-                    if author_surname.lower() == candidate_surname.lower():
-                        print(f"  Matched author surname: {author_surname} in candidate name {name}")
-                        highlighted_author_list.append(f"**{a}")
+                    if compare_initialed_name_with_full_name(
+                        initialed_name = a,
+                        full_name = candidate_gs_name or ""
+                    ):
+                        if DEBUG_MODE: print(f"  Matched author: {a} with candidate's name {candidate_gs_name}")
+                        # highlight the matched author
+                        highlighted_author_list.append(f"**{a}**")
+                        count_highlighted += 1
                         if counter == 1:
                             journal_match_counts_fa[matched_journal] += 1
+                        continue
                     else:
+                        if DEBUG_MODE: print(f"  Did not match author: {a} with candidate name {candidate_gs_name}")
                         highlighted_author_list.append(a)
-                
+                                    
+                if count_highlighted == 0:
+                    raise AuthorMatchError(
+                        f"No author matched candidate '{candidate_gs_name}' "
+                        f"for journal '{matched_journal}'. "
+                        f"Authors found: {', '.join(author_list)}"
+                    )
+                elif count_highlighted > 1:
+                    raise AuthorMatchError(
+                        f"Multiple ({count_highlighted}) authors matched candidate "
+                        f"'{candidate_gs_name}' for journal '{matched_journal}'. "
+                        f"Authors found: {', '.join(author_list)}"
+                    )
+                    
                 journal_num_authors[matched_journal] += len(author_list)
                 
                 authors = ", ".join(highlighted_author_list)
@@ -464,7 +548,7 @@ def scrape_it(
     print("\n ------------------------------------------\n")
 
     return (
-        name,
+        candidate_gs_name,
         institution,
         research_areas,
         h_all,
@@ -477,7 +561,7 @@ def scrape_it(
         journal_match_details,
         article_count,
     )
-
+            
 # ========================
 
 # step through all GS pages and scrape profile info 
@@ -783,6 +867,8 @@ def process_profile(
             html_dir=html_dir,
         )
         
+    except AuthorMatchError:
+        raise        
     except Exception as e:
         print(f" ERROR  - Detected error while processing cached HTML for {url}.")
         print(f" Details: {e}")
@@ -895,7 +981,9 @@ def main():
     
     global OFFLINE_MODE
     global FETCH_ONLY_MODE
+    global NORMAL_MODE
     global BLOCKING_SUSPECTED
+    global DEBUG_MODE
     
     parser = argparse.ArgumentParser(
         description="Snappy - Super Neat Academic Profile Parser"
@@ -911,10 +999,24 @@ def main():
         action="store_true",
         help="Only fetch and cache HTML from Google Scholar; do not parse or write outputs.",
     )
+    mode_group.add_argument(
+        "--normal",
+        action="store_true",
+        help="Normal mode - fetch, parse, and write outputs (default).",
+    )
+    
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Debug mode - gives verbose outputs.",
+    )
+
 
     args = parser.parse_args()
     OFFLINE_MODE = args.offline
     FETCH_ONLY_MODE = args.fetch_only
+    NORMAL_MODE = args.normal   
+    DEBUG_MODE = args.debug
     
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print(" ~~~~~~ Welcome to Snappy - The Super Neat Academic Profile Parser.py ~~~~~~")
@@ -1304,4 +1406,10 @@ def main():
 # =========================
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except AuthorMatchError as e:
+        print("\nFATAL ERROR:")
+        print(e)
+        print("\nAborting Snappy due to inconsistent author matching.\n")
+        sys.exit(1)
