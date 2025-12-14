@@ -128,16 +128,16 @@ def extract_journal_name(raw_info: str) -> str:
 # candidate name is assumed to be full name format "Firstname Middlename Surname"
 # author name is assumed to be in "Initials Surname" format
 
-def compare_initialed_name_with_full_name(
-    initialed_name: str,
+def compare_initialled_name_with_full_name(
+    initialled_name: str,
     full_name: str
 ) -> bool:
     
     global DEBUG_MODE
     
-    if DEBUG_MODE: print(f"\n Comparing initialed name '{initialed_name}' with full name '{full_name}'")
+    if DEBUG_MODE: print(f"\n Comparing initialled name '{initialled_name}' with full name '{full_name}'")
     
-    # decompose full name and reconstruct as an initialed name
+    # decompose full name and reconstruct as an initialled name
     full_name_parts = full_name.strip().split(" ")    
     
     if len(full_name_parts) >= 2:
@@ -163,13 +163,13 @@ def compare_initialed_name_with_full_name(
     full_name_initialised = " ".join([full_name_initials, full_name_surname]) 
     
     # compare names
-    if DEBUG_MODE: print(f"   Comparing names: '{initialed_name}' with '{full_name_initialised}'")
+    if DEBUG_MODE: print(f"   Comparing names: '{initialled_name}' with '{full_name_initialised}'")
     
-    if initialed_name.lower() != full_name_initialised.lower():
-        if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialed_name}' != '{full_name_initialised}")
+    if initialled_name.lower() != full_name_initialised.lower():
+        if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialled_name}' != '{full_name_initialised}")
         return False
     
-    if DEBUG_MODE: print(f"  Return True <=  '{initialed_name}' == '{full_name_initialised}'")
+    if DEBUG_MODE: print(f"  Return True <=  '{initialled_name}' == '{full_name_initialised}'")
     return True
 
 # =========================
@@ -500,8 +500,8 @@ def scrape_it(
                 for a in author_list:
                     counter += 1
                     
-                    if compare_initialed_name_with_full_name(
-                        initialed_name = a,
+                    if compare_initialled_name_with_full_name(
+                        initialled_name = a,
                         full_name = candidate_gs_name or ""
                     ):
                         if DEBUG_MODE: print(f"  Matched author: {a} with candidate's name {candidate_gs_name}")
