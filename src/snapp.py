@@ -137,6 +137,27 @@ def compare_initialled_name_with_full_name(
     
     if DEBUG_MODE: print(f"\n Comparing initialled name '{initialled_name}' with full name '{full_name}'")
     
+    # search for a hyphen in the intialled name to detect multi-barrelled surnames
+    found_hyphen_initialled_name = False
+    if "-" in initialled_name:
+        found_hyphen_initialled_name = True
+        if DEBUG_MODE: print(f"   Detected hyphen in initialled name '{initialled_name}' => multi-barrelled surname assumed.")
+        # count the number of hyphens in the full name
+        hyphen_count = initialled_name.count("-")
+        if hyphen_count > 1:
+            print(f"   ERROR - Multiple hyphens ({hyphen_count}) detected in initialled name '{initialled_name}'")
+            exit(1)        
+        
+    found_hyphen_full_name = False
+    if "-" in full_name:
+        found_hyphen_full_name = True
+        if DEBUG_MODE: print(f"   Detected hyphen in full name '{full_name}' => multi-barrelled surname assumed.")
+        # count the number of hyphens in the full name
+        hyphen_count = full_name.count("-")
+        if hyphen_count > 1:
+            print(f"   ERROR - Multiple hyphens ({hyphen_count}) detected in full name '{full_name}'")
+            exit(1)
+    
     # decompose full name and reconstruct as an initialled name
     full_name_parts = full_name.strip().split(" ")    
     
@@ -162,11 +183,17 @@ def compare_initialled_name_with_full_name(
     
     full_name_initialised = " ".join([full_name_initials, full_name_surname]) 
     
+    # remove hyphens from both names if either has a hyphen
+    if found_hyphen_initialled_name or found_hyphen_full_name:
+        initialled_name = initialled_name.replace("-", " ")
+        full_name_initialised = full_name_initialised.replace("-", " ")
+        if DEBUG_MODE: print(f"   Hyphens removed for comparison: '{initialled_name}' and '{full_name_initialised}'")
+    
     # compare names
     if DEBUG_MODE: print(f"   Comparing names: '{initialled_name}' with '{full_name_initialised}'")
     
     if initialled_name.lower() != full_name_initialised.lower():
-        if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialled_name}' != '{full_name_initialised}")
+        if DEBUG_MODE: print(f"   Return False <= Names do not match: '{initialled_name}' != '{full_name_initialised}")
         return False
     
     if DEBUG_MODE: print(f"  Return True <=  '{initialled_name}' == '{full_name_initialised}'")
@@ -375,7 +402,7 @@ def scrape_it(
         inst_divs = soup.find_all("div", class_="gsc_prf_il")
         if inst_divs:
             institution = inst_divs[0].get_text(strip=True)
-        print(f"\n Institution: {institution if institution else 'None found'}")
+        if DEBUG_MODE: print(f"\n Institution: {institution if institution else 'None found'}")
 
         # ---------------------------------------------------------------------
         # research areas / interests tags:
@@ -393,10 +420,11 @@ def scrape_it(
                     ra.append(text)
         research_areas = ra
 
-        if research_areas:
-            print(" Research areas: " + ", ".join(research_areas))
-        else:
-            print(" Research areas: None found")
+        if DEBUG_MODE:
+            if research_areas:
+                print(" Research areas: " + ", ".join(research_areas))
+            else:
+                print(" Research areas: None found")
 
         # ---------------------------------------------------------------------
         # h-index and citations table tags:
@@ -436,9 +464,9 @@ def scrape_it(
                             h_5y = int(cells[2].get_text(strip=True))
                         except ValueError:
                             h_5y = None
-
-        print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
-        print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
+        if DEBUG_MODE:
+            print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+            print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
 
     # journal matching on all pages
     # ---------------------------------------------------------------------
@@ -492,6 +520,30 @@ def scrape_it(
                 authors = gray_elems[0].get_text(strip=True)
                 journal_info = gray_elems[1].get_text(strip=True)
                 
+                # ---- cited-by + year live in sibling columns ----
+                cited_by = 0
+                year = ""
+
+                cited_td = row.find("td", class_="gsc_a_c")
+                if cited_td:
+                    cited_a = cited_td.find("a")  # when citations exist it's usually a link
+                    cited_txt = (cited_a.get_text(strip=True) if cited_a else cited_td.get_text(strip=True))
+                    try:
+                        cited_by = int(cited_txt) if cited_txt else 0
+                    except ValueError:
+                        cited_by = 0
+
+                cited_by_url = ""
+                if cited_td:
+                    cited_a = cited_td.find("a")
+                    if cited_a and cited_a.get("href"):
+                        cited_by_url = "https://scholar.google.com" + cited_a["href"]
+
+                year_td = row.find("td", class_="gsc_a_y")
+                if year_td:
+                    year_txt = year_td.get_text(strip=True)
+                    year = year_txt  # keep as string; you can int() it if you want
+
                 # create a list of authors by separating on commas
                 author_list = [a.strip() for a in authors.split(",") if a.strip()]
                 
@@ -522,7 +574,7 @@ def scrape_it(
                         if DEBUG_MODE: print(f"  Did not match author: {a} with candidate name {candidate_gs_name}")
                         highlighted_author_list.append(a)
                                     
-                if count_highlighted == 0:
+                '''if count_highlighted == 0:
                     raise AuthorMatchWarning(
                         f"No author matched candidate '{candidate_gs_name}' "
                         f"for journal '{matched_journal}'. "
@@ -533,16 +585,16 @@ def scrape_it(
                         f"Multiple ({count_highlighted}) authors matched candidate "
                         f"'{candidate_gs_name}' for journal '{matched_journal}'. "
                         f"Authors found: {', '.join(author_list)}"
-                    )
+                    )'''
                     
                 journal_num_authors[matched_journal] += len(author_list)
                 
                 authors = ", ".join(highlighted_author_list)
 
-                full_entry = f"{authors} | {title} | {journal_info}"
+                full_entry = f'{authors} | {title} | {journal_info} | cited_by={cited_by} | year={year}'
                 journal_match_details[matched_journal].append(full_entry)
 
-    if not FETCH_ONLY_MODE:
+    if not FETCH_ONLY_MODE and DEBUG_MODE:
         print(f" Total articles on this page: {article_count}")
         print(" Journal match counts on this page:")
         for j, c in journal_match_counts.items():
@@ -665,31 +717,32 @@ def scrape_profile_all_publications(
     if not any_page:
         print(f"\n Warning - No cached HTML pages found for user_id={user_id} in {html_dir}\n")
     else:
-        print(" === Results aggregated over ALL cached pages ===\n")
-        print(f" Name: {name}")
-        print(f" Institution: {institution}")
-        if research_areas:
-            print(" Research areas: " + ", ".join(research_areas))
-        print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
-        print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
-        print(f" Total articles (all pages): {total_article_count}")
-        print(" Journal match counts (all pages):")
-        for journal, count in total_journal_counts.items():
-            if count > 0:
-                print(f"  {journal}: {count}")
-        print(" First author journal match counts (all pages):")                
-        for journal, count in total_journal_counts_fa.items():
-            if count > 0:
-                print(f"  {journal}: {count}")     
-        print(" Second author journal match counts (all pages):")
-        for journal, count in total_journal_counts_sa.items():
-            if count > 0:
-                print(f"  {journal}: {count}")
-        print(" Last author journal match counts (all pages):")
-        for journal, count in total_journal_counts_la.items():
-            if count > 0:
-                print(f"  {journal}: {count}")           
-        print("\n ===============================================================================\n")
+        if DEBUG_MODE:
+            print(" === Results aggregated over ALL cached pages ===\n")
+            print(f" Name: {name}")
+            print(f" Institution: {institution}")
+            if research_areas:
+                print(" Research areas: " + ", ".join(research_areas))
+            print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+            print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
+            print(f" Total articles (all pages): {total_article_count}")
+            print(" Journal match counts (all pages):")
+            for journal, count in total_journal_counts.items():
+                if count > 0:
+                    print(f"  {journal}: {count}")
+            print(" First author journal match counts (all pages):")                
+            for journal, count in total_journal_counts_fa.items():
+                if count > 0:
+                    print(f"  {journal}: {count}")     
+            print(" Second author journal match counts (all pages):")
+            for journal, count in total_journal_counts_sa.items():
+                if count > 0:
+                    print(f"  {journal}: {count}")
+            print(" Last author journal match counts (all pages):")
+            for journal, count in total_journal_counts_la.items():
+                if count > 0:
+                    print(f"  {journal}: {count}")           
+            print("\n ===============================================================================\n")
 
     return (
         name,
@@ -815,7 +868,7 @@ def create_summary(
         summary_lines.append("")
         summary = "\n".join(summary_lines)
         
-        if DEBUG_MODE:
+        if True:
             print("\n ======= FULL SUMMARY ======= \n")
             print(summary)
             print("\n ============================ \n")
@@ -841,8 +894,12 @@ def create_summary(
     summary_lines.append("------------------------------------------")
     summary_lines.append("")
     summary_lines.append("Journal / Conference Article Summary:")
-    summary_lines.append("(From Journal List Only)")
-    summary_lines.append("")    
+    summary_lines.append("Notes: ")
+    summary_lines.append(" - From Journal List Only")
+    summary_lines.append(" - [Number of citations]")
+    summary_lines.append(" - Ordered by number of citations")
+    summary_lines.append("")
+    
     for journal in journal_list:
         count = journal_counts.get(journal, 0)
         count_fa = journal_counts_fa.get(journal, 0)
@@ -857,17 +914,19 @@ def create_summary(
             summary_lines.append(f"Number of first author articles: {count_fa}")   
             summary_lines.append(f"Number of second author articles: {count_sa}")   
             summary_lines.append(f"Number of last author articles: {count_la}")
-            summary_lines.append("")   
+            #summary_lines.append("")   
 
             #summary_lines.append(f"Average number of authors: {num_authors / count:.1f}")
 
             for detail in details:
                 # expected detail format: authors | title | journal_info
-                parts = [p.strip() for p in detail.split("|", 2)]
+                parts = [p.strip() for p in detail.split("|", 4)]
 
-                if len(parts) == 3:
-                    authors, title, journal_info = parts
-                    line = f'{authors}, "{title}", {journal_info}'
+                if len(parts) == 5:
+                    authors, title, journal_info, cited_by, year = parts
+                    # replace cited_by= with just the number
+                    cited_by = cited_by.replace("cited_by=", "").strip()
+                    line = f'{authors}, "{title}", {journal_info} [{cited_by}]'
                 else:
                     # fallback if format is unexpected
                     line = detail.replace("|", ", ")
@@ -876,18 +935,24 @@ def create_summary(
 
             # blank line between journals for readability
             summary_lines.append("")
+            #summary_lines.append(" ------------------------------------------")
 
-    # remove trailing blank line
-    #while summary_lines and summary_lines[-1] == "":
+    # remove trailing line
+    #while summary_lines and summary_lines[-1] == " ------------------------------------------":
     #    summary_lines.pop()
-
+                
     summary = "\n".join(summary_lines)
     
-    if DEBUG_MODE:
+    # replace all instances in which there is no space after a comma with a space
+    summary = summary.replace(",\"", ", \"")
+    
+    if True:
         print("\n ======= FULL SUMMARY ======= \n")
         print(summary)
         print("\n ============================ \n")
-    
+        
+
+        
     return summary
     
 # =========================
