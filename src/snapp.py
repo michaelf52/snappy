@@ -510,7 +510,7 @@ def scrape_it(
                     ):
                         if DEBUG_MODE: print(f"  Matched author: {a} with candidate's name {candidate_gs_name}")
                         # highlight the matched author
-                        highlighted_author_list.append(f"**{a}")
+                        highlighted_author_list.append(f"**{a}**")
                         count_highlighted += 1
                         if counter == 1:
                             journal_match_counts_fa[matched_journal] += 1
@@ -776,6 +776,122 @@ def fetch_and_cache_profile(
 
 # =========================
 
+# create a single string object that gives a summary of the candidate record and journal_details   
+ 
+def create_summary(
+    record: Dict[str, object],
+    journal_counts: Dict[str, int] = {},
+    journal_counts_fa: Dict[str, int] = {},
+    journal_counts_sa: Dict[str, int] = {},
+    journal_counts_la: Dict[str, int] = {},
+    journal_num_authors: Dict[str, int] = {},    
+    journal_details: Dict[str, List[str]] = {},
+    journal_list: List[str] = [],
+    is_empty_record: bool = False,
+) -> str:
+    
+    global DEBUG_MODE
+    
+    summary_lines: List[str] = []
+    
+    #summary_lines.append(" ===============================================================================================")
+    #summary_lines.append("")    
+    summary_lines.append(f"Candidate: {record.get('candidate_id', 'UNKNOWN')} - {record.get('candidate_name', 'UNKNOWN')}")
+    summary_lines.append(f"Gender: {record.get('gender', 'UNKNOWN')}")
+    summary_lines.append(f"Country of residence: {record.get('country', 'UNKNOWN')}")
+    #summary_lines.append(f"Email: {record.get('email', 'UNKNOWN')}")
+    summary_lines.append(f"Current Employee: {record.get('current_employee', 'UNKNOWN')}")
+    summary_lines.append(f"Expertise Area: {record.get('expertise_area', 'UNKNOWN')}")
+    summary_lines.append(f"Academic Level: {record.get('academic_level', 'UNKNOWN')}")
+    summary_lines.append(f"PhD Year: {record.get('PhD_year', 'UNKNOWN')}")
+    summary_lines.append(f"PhD Institution: {record.get('PhD_institution', 'UNKNOWN')}")
+    summary_lines.append(f"PhD Institution Rank: {record.get('PhD_institution_rank', 'UNKNOWN')}")
+    summary_lines.append("")    
+    summary_lines.append(" ------------------------------------------")
+    
+    if is_empty_record:
+        summary_lines.append("")
+        summary_lines.append(" No Google Scholar profile data found.")
+        summary_lines.append("")
+        summary = "\n".join(summary_lines)
+        
+        if DEBUG_MODE:
+            print("\n ======= FULL SUMMARY ======= \n")
+            print(summary)
+            print("\n ============================ \n")
+        
+        return summary
+    
+    summary_lines.append("")
+    summary_lines.append(f"Google Scholar Profile Summary:")
+    #summary_lines.append(f"URL: {record.get('gs_url', 'UNKNOWN')}")
+    summary_lines.append(f"Current Institution: {record.get('gs_institution', 'UNKNOWN')}")
+    summary_lines.append(f"Research Areas: {record.get('gs_research_areas', 'UNKNOWN')}")
+    summary_lines.append(f"Citations (All): {record.get('citations_all', 0)} | Citations (5y): {record.get('citations_5y', 0)}")
+    summary_lines.append(f"h-index (All): {record.get('h_index_all', 0)} | h-index (5y): {record.get('h_index_5y', 0)}")
+    summary_lines.append("")
+    summary_lines.append(f"Total Articles: {record.get('article_count', 0)}")
+    summary_lines.append(f"Total Articles in the Journal List: {record.get('journal_count_tot', 0)}")
+    summary_lines.append(f"Total First Author Papers: {record.get('journal_count_tot_fa', 0)}")
+    summary_lines.append(f"Total Second Author Papers: {record.get('journal_count_tot_sa', 0)}")
+    summary_lines.append(f"Total Last Author Papers: {record.get('journal_count_tot_la', 0)}")
+    #average_num_authors = record.get('journal_average_num_authors', 0)
+    #summary_lines.append(f"Average Number of Authors per Paper: {average_num_authors:.1f}")
+    summary_lines.append("")
+    summary_lines.append("------------------------------------------")
+    summary_lines.append("")
+    summary_lines.append("Journal / Conference Article Summary:")
+    summary_lines.append("(From Journal List Only)")
+    summary_lines.append("")    
+    for journal in journal_list:
+        count = journal_counts.get(journal, 0)
+        count_fa = journal_counts_fa.get(journal, 0)
+        count_sa = journal_counts_sa.get(journal, 0)
+        count_la = journal_counts_la.get(journal, 0)
+        num_authors = journal_num_authors.get(journal, 0)
+        details = journal_details.get(journal, [])
+
+        if count > 0:
+            summary_lines.append(f"{journal}")
+            summary_lines.append(f"Number of articles: {count}")   
+            summary_lines.append(f"Number of first author articles: {count_fa}")   
+            summary_lines.append(f"Number of second author articles: {count_sa}")   
+            summary_lines.append(f"Number of last author articles: {count_la}")
+            summary_lines.append("")   
+
+            #summary_lines.append(f"Average number of authors: {num_authors / count:.1f}")
+
+            for detail in details:
+                # expected detail format: authors | title | journal_info
+                parts = [p.strip() for p in detail.split("|", 2)]
+
+                if len(parts) == 3:
+                    authors, title, journal_info = parts
+                    line = f'{authors}, "{title}", {journal_info}'
+                else:
+                    # fallback if format is unexpected
+                    line = detail.replace("|", ", ")
+
+                summary_lines.append(line)
+
+            # blank line between journals for readability
+            summary_lines.append("")
+
+    # remove trailing blank line
+    #while summary_lines and summary_lines[-1] == "":
+    #    summary_lines.pop()
+
+    summary = "\n".join(summary_lines)
+    
+    if DEBUG_MODE:
+        print("\n ======= FULL SUMMARY ======= \n")
+        print(summary)
+        print("\n ============================ \n")
+    
+    return summary
+    
+# =========================
+
 # create a single string object that gives a summary of the journal_details
 
 def create_journal_summary(
@@ -787,6 +903,8 @@ def create_journal_summary(
     journal_details: Dict[str, List[str]],
     journal_list: List[str],
 ) -> str:
+    
+    global DEBUG_MODE
     
     summary_lines: List[str] = []
 
@@ -827,7 +945,38 @@ def create_journal_summary(
     while summary_lines and summary_lines[-1] == "":
         summary_lines.pop()
 
-    return "\n".join(summary_lines)
+    summary = "\n".join(summary_lines)
+    
+    if DEBUG_MODE:
+        print("\n ======= FULL SUMMARY ======= \n")
+        print(summary)
+        print("\n ============================ \n")
+    
+    return summary
+
+# =========================
+
+# get basic profile info from HR spreadsheet 
+
+def get_basic_candidate_info(candidate: tuple) -> Dict:
+    
+    return {
+            "candidate_id": candidate.candidate_id,
+            "candidate_name": candidate.candidate_name,
+            "gender": candidate.gender,
+            "email": candidate.email,
+            "country": candidate.country,
+            "current_employee": candidate.current_employee,
+            "expertise_area": candidate.expertise_area,
+            "academic_level": candidate.academic_level,
+            "PhD_year": candidate.PhD_year,
+            "gs_url": candidate.gs_url,  
+            "PhD_institution": candidate.PhD_institution,
+            "PhD_institution_rank": int(candidate.PhD_institution_rank) if str(candidate.PhD_institution_rank).isdigit() else float('nan'),
+            "YNM": "",
+            "comments": "",
+            "recruiter_notes": "",        
+        }
 
 # =========================
 
@@ -846,35 +995,17 @@ def process_profile(
     print(f" === Processing profile for candidate {candidate.candidate_id}: {candidate.candidate_name} ===\n")
         
     url = candidate.gs_url
-    
-    record = {
-        "candidate_id": candidate.candidate_id,
-        "candidate_name": candidate.candidate_name,
-        "gender": candidate.gender,
-        "email": candidate.email,
-        "country": candidate.country,
-        "current_employee": candidate.current_employee,
-        "expertise_area": candidate.expertise_area,
-        "academic_level": candidate.academic_level,
-        "PhD_year": candidate.PhD_year,
-        "gs_url": url,  
-        "PhD_institution": candidate.PhD_institution,
-        "PhD_institution_rank": int(candidate.PhD_institution_rank) if str(candidate.PhD_institution_rank).isdigit() else float('nan'),
-        "YNM": "",
-        "comments": "",
-        "recruiter_notes": "",        
-    }
-            
+                
     if pd.isna(url):
         print(" Warning - Empty Google Scholar Link, skipping profile.")
-        record.update(empty_record(journal_list))
-        return record
+        return empty_record(candidate, journal_list)
             
     url = sanitise_url(str(url).strip())
     if url is None:
         print(" Warning - Could not sanitise URL, skipping profile.")
-        record.update(empty_record(journal_list))
-        return record
+        return empty_record(candidate, journal_list)
+    
+    record = get_basic_candidate_info(candidate)
     
     try:
         (
@@ -905,13 +1036,11 @@ def process_profile(
     except Exception as e:
         print(f" ERROR  - Detected error while processing cached HTML for {url}.")
         print(f" Details: {e}")
-        record.update(empty_record(journal_list))
-        return record
+        return empty_record(candidate, journal_list)
 
     if not info_found:
         print(f" Warning - No scrapable pages found for URL: {url}")
-        record.update(empty_record(journal_list))
-        return record
+        return empty_record(candidate, journal_list)
 
     if (
         gs_name is None
@@ -920,8 +1049,7 @@ def process_profile(
         and all(v == 0 for v in journal_counts.values())
     ):
         print(f" Warning - No meaningful data scraped for URL: {url}")
-        record.update(empty_record(journal_list))
-        return record
+        return empty_record(candidate, journal_list)
     
     average_num_authors = (
         round(
@@ -948,15 +1076,19 @@ def process_profile(
         "journal_average_num_authors": average_num_authors,
     })
 
-    record["journal_summary"] = create_journal_summary(
+    summary = create_summary(
+        record=record,
         journal_counts=journal_counts,
         journal_counts_fa=journal_counts_fa,
         journal_counts_sa=journal_counts_sa,
         journal_counts_la=journal_counts_la,
-        journal_num_authors=journal_num_authors,
+        journal_num_authors=journal_num_authors,        
         journal_details=journal_details,
-        journal_list=journal_list)
+        journal_list=journal_list
+    )
     
+    record["summary"] = summary
+        
     for j in journal_list:
         record[j] = journal_counts.get(j, 0)
 
@@ -967,14 +1099,18 @@ def process_profile(
 # return an empty record for failed profiles
 
 def empty_record(
+    candidate: tuple,
     journal_list: List[str]
 ) -> Dict[str, object]:
     
     global NOT_FOUND_STRING
+    global NOT_FOUND_NAN
    
     print(f"\n Setting empty record \n")
     print("\n ===============================================================================\n")
-    record = {   
+    record = get_basic_candidate_info(candidate=candidate)
+    
+    record.update({   
         "gs_name": NOT_FOUND_STRING,
         "gs_institution": NOT_FOUND_STRING,
         "gs_research_areas": NOT_FOUND_STRING,
@@ -988,8 +1124,12 @@ def empty_record(
         "journal_count_tot_sa": NOT_FOUND_NAN,
         "journal_count_tot_la": NOT_FOUND_NAN,
         "journal_average_num_authors": NOT_FOUND_NAN,
-    }
-    record["journal_summary"] = NOT_FOUND_STRING
+    })
+    summary = create_summary(
+        record=record,
+        is_empty_record=True)
+    record["summary"] = summary
+   
     for j in journal_list:
         record[j] = NOT_FOUND_NAN
     return record
@@ -1402,7 +1542,8 @@ def main():
         "journal_count_tot_sa": "Total Number of Second Author Publications in Journal List",
         "journal_count_tot_la": "Total Number of Last Author Publications in Journal List",
         "journal_average_num_authors": "Average Number of Authors in Journal List Publications",
-        "journal_summary": "Publication Summary",        
+        #"journal_summary": "Publication Summary",       
+        "summary": "Full Profile Summary",
     }
 
     for j in journal_list:
