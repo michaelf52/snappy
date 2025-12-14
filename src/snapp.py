@@ -40,7 +40,15 @@ class GSBlockedError(Exception):
     pass
 
 class AuthorMatchError(RuntimeError):
-    """Raised when no authors in listmatch the candidate's Google Scholar name."""
+    """Raised when no authors or multiple in list match the candidate's Google Scholar name.
+    This is treated as fatal.
+    """
+    pass
+
+class AuthorMatchWarning(RuntimeError):
+    """Raised when no authors or multiple in list match the candidate's Google Scholar name.
+    This is treated as a warning.
+    """
     pass
 
 # =========================
@@ -60,38 +68,38 @@ def user_id_from_url(url: str) -> Optional[str]:
 
 # =========================
 
-# sanitize list of URLs to standard format in English!
+# sanitise list of URLs to standard format in English!
 
-def sanitize_urls(urls: List[str]) -> List[str]:
+def sanitise_urls(urls: List[str]) -> List[str]:
 
-    sanitized: List[str] = []
+    sanitised: List[str] = []
     for url in urls:
         user_id = user_id_from_url(url)
         if user_id:
-            sanitized_url = f"https://scholar.google.com/citations?user={user_id}&hl=en"
-            sanitized.append(sanitized_url)
+            sanitised_url = f"https://scholar.google.com/citations?user={user_id}&hl=en"
+            sanitised.append(sanitised_url)
         else:
             print(f" Warning - Could not extract user id from URL: {url}, skipping.")
-    return sanitized
+    return sanitised
 
 # =========================
 
-# sanitize a single URL to standard format in English!
+# sanitise a single URL to standard format in English!
 
-def sanitize_url(url: str) -> Optional[str]:
+def sanitise_url(url: str) -> Optional[str]:
     user_id = user_id_from_url(url)
     if user_id:
-        sanitized_url = f"https://scholar.google.com/citations?user={user_id}&hl=en"
-        return sanitized_url
+        sanitised_url = f"https://scholar.google.com/citations?user={user_id}&hl=en"
+        return sanitised_url
     else:
-        print(f" Warning - Could not extract user id from URL: {url}. sanitize_url failed!")
+        print(f" Warning - Could not extract user id from URL: {url}. sanitise_url failed!")
         return None
 
 # ========================
 
-# normalize a journal name by cleaning punctuation and whitespace
+# normalise a journal name by cleaning punctuation and whitespace
 
-def normalize_journal_name(name: str) -> str:
+def normalise_journal_name(name: str) -> str:
     name = name.lower().strip()
     # remove punctuation but keep spaces
     name = name.translate(PUNCT)
@@ -129,50 +137,39 @@ def compare_initialed_name_with_full_name(
     
     if DEBUG_MODE: print(f"\n Comparing initialed name '{initialed_name}' with full name '{full_name}'")
     
-    # decompose initialed name
-    initialed_name_parts = initialed_name.strip().split(" ")
-    
-    if len(initialed_name_parts) >= 2:    
-        initialed_name_initials = initialed_name_parts[0]
-        initialed_name_surname = " ".join(initialed_name_parts[1:])
-    else:
-        initialed_name_initials = ""
-        initialed_name_surname = initialed_name_parts[0]
-
-    # decompose full name
+    # decompose full name and reconstruct as an initialed name
     full_name_parts = full_name.strip().split(" ")    
     
     if len(full_name_parts) >= 2:
-        # initial assumption that this is not a double barrelled surname
-        if DEBUG_MODE: print(f" First stab at surname from full name: {full_name_parts[-1]}")
-        full_name_surname = full_name_parts[-1]
-        # full name initials are the first letters of all parts
         full_name_initials = ""
-        for part in full_name_parts[:-1]:
-            if DEBUG_MODE: print(f"  Full name part: {part}, initial: {part[0]}")
-            if part[0] != part[0].upper():
-                if DEBUG_MODE: print(f"   Initial '{part[0]}' is not uppercase => add it to the surname.")
+        # initial assumption that this is not a multi-barrelled surname
+        if DEBUG_MODE: print(f"   Last word -> forms surname base: {full_name_parts[-1]}")
+        full_name_surname = full_name_parts[-1]
+        # add any preceding parts that start with lowercase letters to the surname otherwise treat as initials
+        for part in reversed(full_name_parts[:-1]):
+            if not part.isalpha():
+                if DEBUG_MODE: print(f"   '{part}' contains non-alphabetic characters, skipping.")
+                continue
+            elif part[0] != part[0].upper():
+                if DEBUG_MODE: print(f"   First letter '{part[0]}' is not uppercase => add to surname.")
                 full_name_surname = part + " " + full_name_surname
             else:
-                if DEBUG_MODE: print(f"   Initial '{part[0]}' is uppercase => add it to the intials string.")
-                full_name_initials += part[0]
+                if DEBUG_MODE: print(f"   First letter '{part[0]}' is uppercase => add it to the initials string.")
+                full_name_initials = part[0] + full_name_initials
     else:
         full_name_initials = ""
         full_name_surname = full_name_parts[0]       
-        
-    # compare surnames
-    if DEBUG_MODE: print(f"  Comparing surnames: '{initialed_name_surname}' with '{full_name_surname}'")
-    if initialed_name_surname.lower() != full_name_surname.lower():
-        if DEBUG_MODE: print(f"  Return False <= Surnames do not match: '{initialed_name_surname}' != '{full_name_surname}'")
+    
+    full_name_initialised = " ".join([full_name_initials, full_name_surname]) 
+    
+    # compare names
+    if DEBUG_MODE: print(f"   Comparing names: '{initialed_name}' with '{full_name_initialised}'")
+    
+    if initialed_name.lower() != full_name_initialised.lower():
+        if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialed_name}' != '{full_name_initialised}")
         return False
     
-    # compare initials
-    if DEBUG_MODE: print(f"  Comparing initials: '{initialed_name_initials}' with '{full_name_initials}'")
-    if initialed_name_initials != full_name_initials:
-        if DEBUG_MODE: print(f"  Return False <= Initials do not match: '{initialed_name_initials}' != '{full_name_initials}'")
-        return False
-
-    if DEBUG_MODE: print(f"  Return True <=  Names match!")
+    if DEBUG_MODE: print(f"  Return True <=  '{initialed_name}' == '{full_name_initialised}'")
     return True
 
 # =========================
@@ -324,7 +321,7 @@ def iter_scholar_pages_requests(
 def scrape_it(
     html: str,
     journal_list: List[str],
-    normalized_journal_titles: Dict[str, str],
+    normalised_journal_titles: Dict[str, str],
     page_idx: int,
 ) -> Tuple[
     Optional[str],          # name
@@ -474,11 +471,11 @@ def scrape_it(
             # extract the journal title from the raw info string
             journal_title = extract_journal_name(raw_info)
 
-            # remove punctuation and normalize
-            journal_norm = normalize_journal_name(journal_title)
+            # remove punctuation and normalise
+            journal_norm = normalise_journal_name(journal_title)
 
-            # compare against normalized journal titles list
-            matched_journal = normalized_journal_titles.get(journal_norm)
+            # compare against normalised journal titles list
+            matched_journal = normalised_journal_titles.get(journal_norm)
 
             if matched_journal:
                 print(f" Journal match: '{raw_info}' -> '{matched_journal}'")
@@ -509,7 +506,7 @@ def scrape_it(
                     ):
                         if DEBUG_MODE: print(f"  Matched author: {a} with candidate's name {candidate_gs_name}")
                         # highlight the matched author
-                        highlighted_author_list.append(f"**{a}**")
+                        highlighted_author_list.append(f"{a}")
                         count_highlighted += 1
                         if counter == 1:
                             journal_match_counts_fa[matched_journal] += 1
@@ -519,13 +516,13 @@ def scrape_it(
                         highlighted_author_list.append(a)
                                     
                 if count_highlighted == 0:
-                    raise AuthorMatchError(
+                    raise AuthorMatchWarning(
                         f"No author matched candidate '{candidate_gs_name}' "
                         f"for journal '{matched_journal}'. "
                         f"Authors found: {', '.join(author_list)}"
                     )
                 elif count_highlighted > 1:
-                    raise AuthorMatchError(
+                    raise AuthorMatchWarning(
                         f"Multiple ({count_highlighted}) authors matched candidate "
                         f"'{candidate_gs_name}' for journal '{matched_journal}'. "
                         f"Authors found: {', '.join(author_list)}"
@@ -569,7 +566,7 @@ def scrape_it(
 def scrape_profile_all_publications(
     profile_url: str,
     journal_list: List[str],
-    normalized_journal_titles: Dict[str, str],
+    normalised_journal_titles: Dict[str, str],
     html_dir: str = "./html",
     max_pages: int = 50,
 ) -> Tuple[
@@ -635,7 +632,7 @@ def scrape_profile_all_publications(
             page_journal_num_authors,
             page_journal_details,
             page_article_count,
-        ) = scrape_it(html, journal_list, normalized_journal_titles, page_idx)   
+        ) = scrape_it(html, journal_list, normalised_journal_titles, page_idx)   
 
         # accumulate journal counts, details and article counts
         for j in journal_list:
@@ -712,13 +709,13 @@ def fetch_and_cache_profile(
     url_str = str(url).strip()
     print(f"\n  Attempting to fetch and cache Google Scholar URL: {url_str}")
 
-    sanitized_url = sanitize_url(url_str)
-    if sanitized_url is None:
-        print("\n  Warning - Could not sanitize URL, skipping profile.")
+    sanitised_url = sanitise_url(url_str)
+    if sanitised_url is None:
+        print("\n  Warning - Could not sanitise URL, skipping profile.")
         return False
 
     any_page = False
-    user_id = user_id_from_url(sanitized_url) or "UNKNOWN"
+    user_id = user_id_from_url(sanitised_url) or "UNKNOWN"
 
     # set up cache directory
     out_dir = Path(html_dir)
@@ -726,7 +723,7 @@ def fetch_and_cache_profile(
 
     for page_idx, html in enumerate(
         iter_scholar_pages_requests(
-            sanitized_url,
+            sanitised_url,
             session,
             pagesize=pagesize,
             max_pages=max_pages,
@@ -744,9 +741,9 @@ def fetch_and_cache_profile(
         print(f"  Cached HTML for {user_id} page {page_num} -> {out_path}")
 
     if not any_page:
-        print(f"\n Warning - No publication pages cached for URL: {sanitized_url}")
+        print(f"\n Warning - No publication pages cached for URL: {sanitised_url}")
         # likely blocked or unreachable
-        raise GSBlockedError(f"Blocked or no pages for {sanitized_url}")
+        raise GSBlockedError(f"Blocked or no pages for {sanitised_url}")
         
     return True
 
@@ -805,7 +802,7 @@ def create_journal_summary(
 def process_profile(
     candidate: tuple,
     journal_list: List[str],
-    normalized_journal_titles: Dict[str, str],
+    normalised_journal_titles: Dict[str, str],
     html_dir: str,
 ) -> Dict[str, object] | None:
 
@@ -839,9 +836,9 @@ def process_profile(
         record.update(empty_record(journal_list))
         return record
             
-    url = sanitize_url(str(url).strip())
+    url = sanitise_url(str(url).strip())
     if url is None:
-        print(" Warning - Could not sanitize URL, skipping profile.")
+        print(" Warning - Could not sanitise URL, skipping profile.")
         record.update(empty_record(journal_list))
         return record
     
@@ -863,7 +860,7 @@ def process_profile(
         ) = scrape_profile_all_publications(
             profile_url=url,
             journal_list=journal_list,
-            normalized_journal_titles=normalized_journal_titles,
+            normalised_journal_titles=normalised_journal_titles,
             html_dir=html_dir,
         )
         
@@ -1163,8 +1160,8 @@ def main():
     # sort journal list in alphabetical order
     journal_list.sort()
 
-    normalized_journal_titles = {
-        normalize_journal_name(j): j
+    normalised_journal_titles = {
+        normalise_journal_name(j): j
         for j in journal_list
     }
     
@@ -1311,7 +1308,7 @@ def main():
         record = process_profile(
             candidate=candidate,
             journal_list=journal_list,
-            normalized_journal_titles=normalized_journal_titles,
+            normalised_journal_titles=normalised_journal_titles,
             html_dir=html_dir,
         )
         if record is not None:
@@ -1343,7 +1340,7 @@ def main():
         "expertise_area": "Expertise Area",
         "academic_level": "Academic Level Applied For",
         "PhD_year": "PhD Completion Year",
-        "gs_url": "Google Scholar URL",        # this is the sanitized URL
+        "gs_url": "Google Scholar URL",        # this is the sanitised URL
         "PhD_institution": "PhD Institution",
         "PhD_institution_rank": "PhD Institution Rank",
         "YNM": "Longlist/Shortlist (Yes/No/Maybe)",
@@ -1372,6 +1369,8 @@ def main():
     try:
         df = pd.DataFrame(records, columns=fieldnames)
         df.columns = pretty_headers
+        # remove columns we don't want in the Excel output for now
+        df = df.drop(columns=["Average Number of Authors in Journal List Publications"])
         df.to_excel(output_file, index=False)    
     except Exception as e:
         print(f"\n ERROR - Could not write Excel file. Exception: {type(e).__name__}: {e}")
@@ -1389,7 +1388,7 @@ def main():
 
         if choice == "y":
             print("\n Stepping through each URL in your default web browser...")
-            urls = sanitize_urls(df_hr["gs_url"].dropna().astype(str).tolist())
+            urls = sanitise_urls(df_hr["gs_url"].dropna().astype(str).tolist())
             for url in urls:
                 print(f"\n Opening URL: {url}")
                 opened = open_default_browser(url)
