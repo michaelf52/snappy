@@ -14,6 +14,12 @@ import re
 import string
 import random
 import argparse
+from docx import Document
+from docx.shared import Pt
+from docx.document import Document as DocxDocument
+from docx.oxml.ns import qn
+from docx.oxml import OxmlElement
+from docx.shared import Inches
 
 # =========================
 
@@ -25,6 +31,8 @@ NORMAL_MODE = True
 DEBUG_MODE = False
 
 PUNCT = str.maketrans("", "", string.punctuation)
+LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+
 MAX_BLOCK_RETRIES_DEFAULT = 0
 BLOCKING_SUSPECTED = False
 
@@ -537,7 +545,7 @@ def scrape_it(
                 if cited_td:
                     cited_a = cited_td.find("a")
                     if cited_a and cited_a.get("href"):
-                        cited_by_url = "https://scholar.google.com" + cited_a["href"]
+                        cited_by_url = cited_a["href"]
 
                 year_td = row.find("td", class_="gsc_a_y")
                 if year_td:
@@ -591,7 +599,7 @@ def scrape_it(
                 
                 authors = ", ".join(highlighted_author_list)
 
-                full_entry = f'{authors} | {title} | {journal_info} | cited_by={cited_by} | year={year}'
+                full_entry = f'{authors} | {title} | {journal_info} | cited_by={cited_by} | {year}'
                 journal_match_details[matched_journal].append(full_entry)
 
     if not FETCH_ONLY_MODE and DEBUG_MODE:
@@ -841,64 +849,97 @@ def create_summary(
     journal_details: Dict[str, List[str]] = {},
     journal_list: List[str] = [],
     is_empty_record: bool = False,
+    markdown: bool = True # otherwise plain text
 ) -> str:
     
     global DEBUG_MODE
     
     summary_lines: List[str] = []
     
-    #summary_lines.append(" ===============================================================================================")
-    #summary_lines.append("")    
-    summary_lines.append(f"Candidate: {record.get('candidate_id', 'UNKNOWN')} - {record.get('candidate_name', 'UNKNOWN')}")
-    summary_lines.append(f"Gender: {record.get('gender', 'UNKNOWN')}")
-    summary_lines.append(f"Country of residence: {record.get('country', 'UNKNOWN')}")
-    #summary_lines.append(f"Email: {record.get('email', 'UNKNOWN')}")
-    summary_lines.append(f"Current Employee: {record.get('current_employee', 'UNKNOWN')}")
-    summary_lines.append(f"Expertise Area: {record.get('expertise_area', 'UNKNOWN')}")
-    summary_lines.append(f"Academic Level: {record.get('academic_level', 'UNKNOWN')}")
-    summary_lines.append(f"PhD Year: {record.get('PhD_year', 'UNKNOWN')}")
-    summary_lines.append(f"PhD Institution: {record.get('PhD_institution', 'UNKNOWN')}")
-    summary_lines.append(f"PhD Institution Rank: {record.get('PhD_institution_rank', 'UNKNOWN')}")
-    summary_lines.append("")    
-    summary_lines.append(" ------------------------------------------")
+    if markdown:
+        summary_lines.append(f"# Candidate: {record.get('candidate_id', 'UNKNOWN')} - {record.get('candidate_name', 'UNKNOWN')}")
+        summary_lines.append(f"**Gender**: {record.get('gender', 'UNKNOWN')}")
+        summary_lines.append(f"**Country of residence**: {record.get('country', 'UNKNOWN')}")
+        #summary_lines.append(f"Email: {record.get('email', 'UNKNOWN')}")
+        summary_lines.append(f"**Current Employee**: {record.get('current_employee', 'UNKNOWN')}")
+        summary_lines.append(f"**Expertise Area**: {record.get('expertise_area', 'UNKNOWN')}")
+        summary_lines.append(f"**Academic Level**: {record.get('academic_level', 'UNKNOWN')}")
+        summary_lines.append(f"**PhD Year**: {record.get('PhD_year', 'UNKNOWN')}")
+        summary_lines.append(f"**PhD Institution**: {record.get('PhD_institution', 'UNKNOWN')}")
+        summary_lines.append(f"**PhD Institution Rank**: {record.get('PhD_institution_rank', 'UNKNOWN')}") 
+    else:
+        summary_lines.append(f"Candidate: {record.get('candidate_id', 'UNKNOWN')} - {record.get('candidate_name', 'UNKNOWN')}")
+        summary_lines.append(f"Gender: {record.get('gender', 'UNKNOWN')}")
+        summary_lines.append(f"Country of residence: {record.get('country', 'UNKNOWN')}")
+        #summary_lines.append(f"Email: {record.get('email', 'UNKNOWN')}")
+        summary_lines.append(f"Current Employee: {record.get('current_employee', 'UNKNOWN')}")
+        summary_lines.append(f"Expertise Area: {record.get('expertise_area', 'UNKNOWN')}")
+        summary_lines.append(f"Academic Level: {record.get('academic_level', 'UNKNOWN')}")
+        summary_lines.append(f"PhD Year: {record.get('PhD_year', 'UNKNOWN')}")
+        summary_lines.append(f"PhD Institution: {record.get('PhD_institution', 'UNKNOWN')}")
+        summary_lines.append(f"PhD Institution Rank: {record.get('PhD_institution_rank', 'UNKNOWN')}")
+        summary_lines.append("")    
+        summary_lines.append("------------------------------------------")
     
     if is_empty_record:
         summary_lines.append("")
-        summary_lines.append(" No Google Scholar profile data found.")
+        if markdown:
+            summary_lines.append("### No Google Scholar profile data found.")
+        else:
+            summary_lines.append("No Google Scholar profile data found.")
         summary_lines.append("")
         summary = "\n".join(summary_lines)
         
         if True:
-            print("\n ======= FULL SUMMARY ======= \n")
+            if markdown:
+                print("\n ======= FULL SUMMARY - Markdown ======= \n")
+            else:
+                print("\n ======= FULL SUMMARY ======= \n")
             print(summary)
             print("\n ============================ \n")
         
         return summary
     
     summary_lines.append("")
-    summary_lines.append(f"Google Scholar Profile Summary:")
-    #summary_lines.append(f"URL: {record.get('gs_url', 'UNKNOWN')}")
-    summary_lines.append(f"Current Institution: {record.get('gs_institution', 'UNKNOWN')}")
-    summary_lines.append(f"Research Areas: {record.get('gs_research_areas', 'UNKNOWN')}")
-    summary_lines.append(f"Citations (All): {record.get('citations_all', 0)} | Citations (5y): {record.get('citations_5y', 0)}")
-    summary_lines.append(f"h-index (All): {record.get('h_index_all', 0)} | h-index (5y): {record.get('h_index_5y', 0)}")
-    summary_lines.append("")
-    summary_lines.append(f"Total Articles: {record.get('article_count', 0)}")
-    summary_lines.append(f"Total Articles in the Journal List: {record.get('journal_count_tot', 0)}")
-    summary_lines.append(f"Total First Author Papers: {record.get('journal_count_tot_fa', 0)}")
-    summary_lines.append(f"Total Second Author Papers: {record.get('journal_count_tot_sa', 0)}")
-    summary_lines.append(f"Total Last Author Papers: {record.get('journal_count_tot_la', 0)}")
-    #average_num_authors = record.get('journal_average_num_authors', 0)
-    #summary_lines.append(f"Average Number of Authors per Paper: {average_num_authors:.1f}")
-    summary_lines.append("")
-    summary_lines.append("------------------------------------------")
-    summary_lines.append("")
-    summary_lines.append("Journal / Conference Article Summary:")
-    summary_lines.append("Notes: ")
-    summary_lines.append(" - From Journal List Only")
-    summary_lines.append(" - [Number of citations]")
-    summary_lines.append(" - Ordered by number of citations")
-    summary_lines.append("")
+    if markdown:
+        summary_lines.append(f"## Google Scholar Profile Summary")
+        summary_lines.append(f"URL: {record.get('gs_url', 'UNKNOWN')}")
+        summary_lines.append(f"**Current Institution**: {record.get('gs_institution', 'UNKNOWN')}")
+        summary_lines.append(f"**Research Areas**: {record.get('gs_research_areas', 'UNKNOWN')}")
+        summary_lines.append(f"**Citations (All | 5y)**: {record.get('citations_all', 0)} | {record.get('citations_5y', 0)}")
+        summary_lines.append(f"**h-index (All | 5y)**: {record.get('h_index_all', 0)} | {record.get('h_index_5y', 0)}")
+        summary_lines.append(f"**Total Articles**: {record.get('article_count', 0)}")
+        summary_lines.append(f"**Total Articles in the Journal List**: {record.get('journal_count_tot', 0)}")
+        summary_lines.append(f"**Total First Author Papers**: {record.get('journal_count_tot_fa', 0)}")
+        summary_lines.append(f"**Total Second Author Papers**: {record.get('journal_count_tot_sa', 0)}")
+        summary_lines.append(f"**Total Last Author Papers**: {record.get('journal_count_tot_la', 0)}")
+        #average_num_authors = record.get('journal_average_num_authors', 0)
+        #summary_lines.append(f"Average Number of Authors per Paper: {average_num_authors:.1f}")
+        summary_lines.append("")
+    else:
+        summary_lines.append(f"Google Scholar Profile Summary:")
+        #summary_lines.append(f"URL: {record.get('gs_url', 'UNKNOWN')}")
+        summary_lines.append(f"Current Institution: {record.get('gs_institution', 'UNKNOWN')}")
+        summary_lines.append(f"Research Areas: {record.get('gs_research_areas', 'UNKNOWN')}")
+        summary_lines.append(f"Citations (All | 5y): {record.get('citations_all', 0)} | {record.get('citations_5y', 0)}")
+        summary_lines.append(f"h-index (All | 5y): {record.get('h_index_all', 0)} | {record.get('h_index_5y', 0)}")
+        summary_lines.append("")
+        summary_lines.append(f"Total Articles: {record.get('article_count', 0)}")
+        summary_lines.append(f"Total Articles in the Journal List: {record.get('journal_count_tot', 0)}")
+        summary_lines.append(f"Total First Author Papers: {record.get('journal_count_tot_fa', 0)}")
+        summary_lines.append(f"Total Second Author Papers: {record.get('journal_count_tot_sa', 0)}")
+        summary_lines.append(f"Total Last Author Papers: {record.get('journal_count_tot_la', 0)}")
+        #average_num_authors = record.get('journal_average_num_authors', 0)
+        #summary_lines.append(f"Average Number of Authors per Paper: {average_num_authors:.1f}")
+        summary_lines.append("")
+        summary_lines.append("------------------------------------------")
+        summary_lines.append("")        
+      
+    if markdown:    
+        summary_lines.append("## Journal / Conference Article Summary")
+    else:
+        summary_lines.append("Journal / Conference Article Summary:")
+        summary_lines.append("(Articles from Journal List Only)")
     
     for journal in journal_list:
         count = journal_counts.get(journal, 0)
@@ -909,12 +950,18 @@ def create_summary(
         details = journal_details.get(journal, [])
 
         if count > 0:
-            summary_lines.append(f"{journal}")
-            summary_lines.append(f"Number of articles: {count}")   
-            summary_lines.append(f"Number of first author articles: {count_fa}")   
-            summary_lines.append(f"Number of second author articles: {count_sa}")   
-            summary_lines.append(f"Number of last author articles: {count_la}")
-            #summary_lines.append("")   
+            if markdown:
+                summary_lines.append(f"### {journal}")
+                summary_lines.append(f"**Number of articles**: {count}")   
+                summary_lines.append(f"**Number of first author articles**: {count_fa}")   
+                summary_lines.append(f"**Number of second author articles**: {count_sa}")   
+                summary_lines.append(f"**Number of last author articles**: {count_la}")
+            else:
+                summary_lines.append(f"{journal}")
+                summary_lines.append(f"Number of articles: {count}")   
+                summary_lines.append(f"Number of first author articles: {count_fa}")   
+                summary_lines.append(f"Number of second author articles: {count_sa}")   
+                summary_lines.append(f"Number of last author articles: {count_la}")                
 
             #summary_lines.append(f"Average number of authors: {num_authors / count:.1f}")
 
@@ -922,102 +969,281 @@ def create_summary(
                 # expected detail format: authors | title | journal_info
                 parts = [p.strip() for p in detail.split("|", 4)]
 
-                if len(parts) == 5:
-                    authors, title, journal_info, cited_by, year = parts
-                    # replace cited_by= with just the number
-                    cited_by = cited_by.replace("cited_by=", "").strip()
-                    line = f'{authors}, "{title}", {journal_info} [{cited_by}]'
-                else:
-                    # fallback if format is unexpected
-                    line = detail.replace("|", ", ")
+                if markdown:
+                    if len(parts) == 5:
+                        authors, title, journal_info, cited_by, year = parts
+                        # replace cited_by= with just the number
+                        cited_by = cited_by.replace("cited_by=", "cited by ").strip()
+                        line = f'- {authors}, "{title}", {journal_info} **[{cited_by}]**'
+                    else:
+                        # fallback if format is unexpected
+                        line = '-' + detail.replace("|", ", ")
 
-                summary_lines.append(line)
+                    summary_lines.append(line)
+                else:   
+                    if len(parts) == 5:
+                        authors, title, journal_info, cited_by, year = parts
+                        # replace cited_by= with just the number
+                        cited_by = cited_by.replace("cited_by=", "cited by ").strip()
+                        line = f'- {authors}, "{title}", {journal_info} [{cited_by}]'
+                    else:
+                        # fallback if format is unexpected
+                        line = '-' + detail.replace("|", ", ")
+
+                    summary_lines.append(line)
+                        
 
             # blank line between journals for readability
             summary_lines.append("")
-            #summary_lines.append(" ------------------------------------------")
 
     # remove trailing line
-    #while summary_lines and summary_lines[-1] == " ------------------------------------------":
-    #    summary_lines.pop()
+    while summary_lines and summary_lines[-1] == "":
+        summary_lines.pop()
                 
     summary = "\n".join(summary_lines)
     
     # replace all instances in which there is no space after a comma with a space
-    summary = summary.replace(",\"", ", \"")
+    # or no space around parentheses
+    summary = normalise_punctuation(summary)
     
     if True:
-        print("\n ======= FULL SUMMARY ======= \n")
+        if markdown:
+            print("\n ======= FULL SUMMARY - Markdown ======= \n")
+        else:
+            print("\n ======= FULL SUMMARY ======= \n")
         print(summary)
         print("\n ============================ \n")
         
-
-        
     return summary
-    
+   
+# ========================
+
+def normalise_punctuation(summary: str) -> str:
+    # ensure space after comma
+    summary = re.sub(r",(?=\S)", ", ", summary)
+
+    # ensure space before opening parenthesis
+    summary = re.sub(r"(?<![ \n])\(", " (", summary)
+
+    # ensure space after closing parenthesis
+    summary = re.sub(r"\)(?=\S)", ") ", summary)
+
+    # collapse multiple SPACES only (not newlines)
+    summary = re.sub(r"[ ]{2,}", " ", summary)
+
+    return summary.strip()
+
+# =======================
+
+def add_md_inline_runs(p, text: str) -> None:
+    """
+    Adds runs to an existing paragraph, converting:
+      - **bold**
+      - _italic_
+    Simple, deterministic parser (no nesting guarantees beyond common cases).
+    """
+    i = 0
+    while i < len(text):
+        # find next bold or italic marker
+        next_bold = text.find("**", i)
+        next_ital = text.find("_", i)
+
+        # pick the earliest marker that exists
+        candidates = [(next_bold, "bold"), (next_ital, "ital")]
+        candidates = [(pos, kind) for pos, kind in candidates if pos != -1]
+        if not candidates:
+            p.add_run(text[i:])
+            return
+
+        j, kind = min(candidates, key=lambda x: x[0])
+
+        # add normal text before marker
+        if j > i:
+            p.add_run(text[i:j])
+
+        if kind == "bold":
+            k = text.find("**", j + 2)
+            if k == -1:
+                # unmatched -> treat as literal
+                p.add_run(text[j:])
+                return
+            run_text = text[j + 2 : k]
+            r = p.add_run(run_text)
+            r.bold = True
+            i = k + 2
+        else:  # ital
+            k = text.find("_", j + 1)
+            if k == -1:
+                p.add_run(text[j:])
+                return
+            run_text = text[j + 1 : k]
+            r = p.add_run(run_text)
+            r.italic = True
+            i = k + 1
+
 # =========================
 
-# create a single string object that gives a summary of the journal_details
+def add_md_line(doc: "DocxDocument", line: str) -> None:
+    """
+    Adds ONE markdown-ish line to the doc, supporting:
+      - Headings: #..###### + space
+      - Bullets: "- " at start
+      - Inline bold/italics via add_md_inline_runs
+    """
+    raw = line.rstrip("\n")
+    if not raw.strip():
+        doc.add_paragraph("")  # blank line
+        return
 
-def create_journal_summary(
-    journal_counts: Dict[str, int],
-    journal_counts_fa: Dict[str, int],
-    journal_counts_sa: Dict[str, int],
-    journal_counts_la: Dict[str, int],
-    journal_num_authors: Dict[str, int],
-    journal_details: Dict[str, List[str]],
-    journal_list: List[str],
-) -> str:
+    # headings: expects '# Title" with a space after hashes
+    m = re.match(r"^(#{1,6})\s+(.*)$", raw)
+    if m:
+        level = min(len(m.group(1)), 6)
+        text = m.group(2).strip()
+        p = doc.add_paragraph(style=f"Heading {level}")
+        add_md_inline_runs(p, text)
+        return
+
+    # bullets
+    if raw.lstrip().startswith("- "):
+        text = raw.lstrip()[2:].strip()
+        p = doc.add_paragraph(style="List Bullet")
+        add_md_inline_runs(p, text)
+        return
+
+    # normal paragraph
+    p = doc.add_paragraph()
+    add_md_inline_runs(p, raw)
+
+# =========================
+
+def add_md_block(doc: "DocxDocument", text: str) -> None:
+    """
+    Adds a multi-line markdown-ish block to a doc.
+    """
+    for line in text.splitlines():
+        add_md_line(doc, line)
+
+# =========================
+
+def set_style_font(style, name="Arial", size_pt=10):
+    font = style.font
+    font.name = name
+    font.size = Pt(size_pt)
+
+    # Required for Word to respect the font fully
+    style._element.rPr.rFonts.set(qn("w:eastAsia"), name)
+
+# =======================
+
+def set_document_font(doc: Document, name="Arial", size_pt=10):
+    # normal text
+    set_style_font(doc.styles["Normal"], name, size_pt)
+
+    # headings
+    for i in range(1, 10):
+        means = f"Heading {i}"
+        if means in doc.styles:
+            set_style_font(doc.styles[means], name, size_pt + (4 if i == 1 else 2))
+
+    # lists
+    for style_name in [
+        "List Bullet",
+        "List Number",
+        "List Bullet 2",
+        "List Number 2",
+    ]:
+        if style_name in doc.styles:
+            set_style_font(doc.styles[style_name], name, size_pt)
+
+# =======================
+
+def set_moderate_margins(doc):
+    section = doc.sections[0]
+    section.top_margin = Inches(1)
+    section.bottom_margin = Inches(1)
+    section.left_margin = Inches(0.75)
+    section.right_margin = Inches(0.75)
+
+# =========================
+
+# add summary text to a Word document
+
+def add_summary_to_doc(
+    doc: Document, 
+    summary: str, 
+) -> None:
     
-    global DEBUG_MODE
+    lines = [ln.rstrip() for ln in summary.splitlines(keepends=True)]
+
+    for ln in lines:
+        line = ln.strip()
+
+        if not line:
+            doc.add_paragraph("")
+            continue
+
+        add_md_line(doc, line)
+        
+    return None
+
+# =======================
+
+# write summaries to a Word document
+
+def write_summaries_docx(
+    records: List[Dict], 
+    round_code: str,
+    round_description: str,
+    out_path: str, 
+) -> None:
+
+    doc = Document()
     
-    summary_lines: List[str] = []
+    set_document_font(doc, "Arial", 10)
+    set_moderate_margins(doc)
 
-    for journal in journal_list:
-        count = journal_counts.get(journal, 0)
-        count_fa = journal_counts_fa.get(journal, 0)
-        count_sa = journal_counts_sa.get(journal, 0)
-        count_la = journal_counts_la.get(journal, 0)
-        num_authors = journal_num_authors.get(journal, 0)
-        details = journal_details.get(journal, [])
+    # global paragraph spacing
+    normal = doc.styles["Normal"]
+    pf = normal.paragraph_format
+    pf.space_before = Pt(0)
+    pf.space_after = Pt(0)
+    pf.line_spacing = 1.15
 
-        if count > 0:
-            summary_lines.append(f"Journal / Conference: {journal}")
-            summary_lines.append(f"Number of articles: {count}")   
-            summary_lines.append(f"Number of first author articles: {count_fa}")   
-            summary_lines.append(f"Number of second author articles: {count_sa}")   
-            summary_lines.append(f"Number of last author articles: {count_la}")   
+    # headings
+    for level in range(1, 4):
+        h = doc.styles[f"Heading {level}"]
+        hpf = h.paragraph_format
+        hpf.space_before = Pt(9)
+        hpf.space_after = Pt(6)
 
-            #summary_lines.append(f"Average number of authors: {num_authors / count:.1f}")
+    doc.add_heading("Candidate Summary Report", level=1)
+    doc.add_heading(round_code, level=4)
+    doc.add_heading(round_description, level=4)
+    doc.add_paragraph("")
 
-            for detail in details:
-                # expected detail format: authors | title | journal_info
-                parts = [p.strip() for p in detail.split("|", 2)]
+    generated_at = time.strftime("%Y-%m-%d %H:%M")
+    doc.add_heading(f"Generated at {generated_at}", level=4)
 
-                if len(parts) == 3:
-                    authors, title, journal_info = parts
-                    line = f'{authors}, "{title}", {journal_info}'
-                else:
-                    # fallback if format is unexpected
-                    line = detail.replace("|", ", ")
+    doc.add_paragraph("")
+    doc.add_heading("Notes regarding journal/conference article lists", level=4)
+    doc.add_paragraph("The articles listed for each candidate are the articles published in journals/conference proceedings given the supplied journal list only.", style="List Bullet")
+    doc.add_paragraph("The number of citations for an article is shown in square brackets.", style="List Bullet")
+    doc.add_paragraph("Articles for a particular journal are ordered by the number of citations.", style="List Bullet")
+    doc.add_page_break()
 
-                summary_lines.append(line)
+    for idx, record in enumerate(records, start=1):
+        summary = record.get("summary_markdown", "") or ""
+        if not summary.strip():
+            continue
+        
+        # add this candidate's summary
+        add_summary_to_doc(doc, summary)
+        
+        doc.add_page_break()
 
-            # blank line between journals for readability
-            summary_lines.append("")
-
-    # remove trailing blank line
-    while summary_lines and summary_lines[-1] == "":
-        summary_lines.pop()
-
-    summary = "\n".join(summary_lines)
-    
-    if DEBUG_MODE:
-        print("\n ======= FULL SUMMARY ======= \n")
-        print(summary)
-        print("\n ============================ \n")
-    
-    return summary
+    doc.save(out_path)
+    return None
 
 # =========================
 
@@ -1141,7 +1367,7 @@ def process_profile(
         "journal_average_num_authors": average_num_authors,
     })
 
-    summary = create_summary(
+    record["summary_markdown"] = create_summary(
         record=record,
         journal_counts=journal_counts,
         journal_counts_fa=journal_counts_fa,
@@ -1149,10 +1375,23 @@ def process_profile(
         journal_counts_la=journal_counts_la,
         journal_num_authors=journal_num_authors,        
         journal_details=journal_details,
-        journal_list=journal_list
+        journal_list=journal_list,
+        is_empty_record=False,
+        markdown=True
     )
     
-    record["summary"] = summary
+    record["summary_plaintext"] = create_summary(
+        record=record,
+        journal_counts=journal_counts,
+        journal_counts_fa=journal_counts_fa,
+        journal_counts_sa=journal_counts_sa,
+        journal_counts_la=journal_counts_la,
+        journal_num_authors=journal_num_authors,        
+        journal_details=journal_details,
+        journal_list=journal_list,
+        is_empty_record=False,
+        markdown=False
+    )
         
     for j in journal_list:
         record[j] = journal_counts.get(j, 0)
@@ -1190,10 +1429,18 @@ def empty_record(
         "journal_count_tot_la": NOT_FOUND_NAN,
         "journal_average_num_authors": NOT_FOUND_NAN,
     })
-    summary = create_summary(
+
+    record["summary_markdown"] = create_summary(
         record=record,
-        is_empty_record=True)
-    record["summary"] = summary
+        is_empty_record=True,
+        markdown=True
+    )
+    
+    record["summary_plaintext"] = create_summary(
+        record=record,
+        is_empty_record=True,
+        markdown=False
+    )    
    
     for j in journal_list:
         record[j] = NOT_FOUND_NAN
@@ -1254,6 +1501,12 @@ def main():
         action="store_true",
         help="Debug mode - gives verbose outputs.",
     )
+    
+    parser.add_argument(
+        "--accept-defaults",
+        action="store_true",
+        help="Accept all default settings and run.",
+    )
 
 
     args = parser.parse_args()
@@ -1261,6 +1514,7 @@ def main():
     FETCH_ONLY_MODE = args.fetch_only
     NORMAL_MODE = args.normal   
     DEBUG_MODE = args.debug
+    ACCEPT_DEFAULTS = args.accept_defaults
     
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print(" ~~~~~~ Welcome to Snappy - The Super Neat Academic Profile Parser.py ~~~~~~")
@@ -1282,19 +1536,22 @@ def main():
     # give user a chance to invoke these modes if not already specified
     if not OFFLINE_MODE and not FETCH_ONLY_MODE:
         # give user option to run in offline mode
-        answer = input(
-            "\n Do you want to run in OFFLINE mode (parse cached HTML only)? (y/N): "
-        ).strip().lower()
-        if answer == "y":
-            OFFLINE_MODE = True
-
-        if not OFFLINE_MODE:
-            # give user option to run in fetch-only mode
+        if ACCEPT_DEFAULTS:
+            print("\n Accepting default settings: running in NORMAL mode.\n")
+        else:
             answer = input(
-                "\n Do you want to run in FETCH-ONLY mode (download and cache pages only)? (y/N): "
+                "\n Do you want to run in OFFLINE mode (parse cached HTML only)? (y/N): "
             ).strip().lower()
             if answer == "y":
-                FETCH_ONLY_MODE = True
+                OFFLINE_MODE = True
+
+            if not OFFLINE_MODE:
+                # give user option to run in fetch-only mode
+                answer = input(
+                    "\n Do you want to run in FETCH-ONLY mode (download and cache pages only)? (y/N): "
+                ).strip().lower()
+                if answer == "y":
+                    FETCH_ONLY_MODE = True
                 
     if OFFLINE_MODE:
         print("\n Running in OFFLINE mode (shhh!): I will not contact Google Scholar.")
@@ -1306,10 +1563,17 @@ def main():
         print("\n Running in NORMAL mode: I will download and parse Google Scholar profile pages.\n")
                         
     # request HR report name
-    hr_report_file = input(
-        " Enter the name of the HR report file to process "
-        "or press Enter for default ('Campaign_Application_Report.xlsx'):\n "
-    ) or "Campaign_Application_Report.xlsx"
+    if ACCEPT_DEFAULTS:
+        print(
+            " Accepting default HR report file name: "
+            "'Campaign_Application_Report.xlsx'.\n"
+        )
+        hr_report_file = "Campaign_Application_Report.xlsx"
+    else:
+        hr_report_file = input(
+            " Enter the name of the HR report file to process "
+            "or press Enter for default ('Campaign_Application_Report.xlsx'):\n "
+        ) or "Campaign_Application_Report.xlsx"
     
     hr_report_file = rel_path + hr_report_file.strip()
     
@@ -1320,10 +1584,18 @@ def main():
     # convert the report to CSV for easier processing
     print(f"\n Extracting information from '{hr_report_file}' for processing...")
     try:
-        df_hr = pd.read_excel(hr_report_file)
-
-        # remove the first two rows
-        df_hr = df_hr.iloc[1:].reset_index(drop=True)
+        df_hr = pd.read_excel(hr_report_file, header=None)
+        
+        # read the first row
+        round_description = df_hr.iloc[0][0].strip()
+        print (f" Detected application full description: {round_description}\n")
+        round_code = round_description.split(" ")[0].strip()
+        print (f" Using application round code: {round_code}\n")
+        # remove round_code from round_description
+        round_description = round_description[len(round_code):].strip(" -") 
+        
+        # remove the first two rows of the data frame
+        df_hr = df_hr.iloc[2:].reset_index(drop=True)
 
         # take the next row as header, clean its newlines, then set as columns
         raw_header = df_hr.iloc[0]
@@ -1385,10 +1657,14 @@ def main():
     print("\n ------------------------------------------\n")
 
     # read list of key journal names
-    journal_list_file = input(
-        " Enter the name of the file containing a list of journal names of interest "
-        "or press Enter for default ('journal_list.txt'):\n "
-    ) or "journal_list.txt"
+    if ACCEPT_DEFAULTS:
+        print(" Accepting default journal list file name: 'journal_list.txt'.\n")
+        journal_list_file = "journal_list.txt"
+    else:
+        journal_list_file = input(
+            " Enter the name of the file containing a list of journal names of interest "
+            "or press Enter for default ('journal_list.txt'):\n "
+        ) or "journal_list.txt"
     
     journal_list_file = rel_path + journal_list_file.strip()
     
@@ -1404,13 +1680,17 @@ def main():
         else:
             print(f" Loaded {len(journal_list)} journal titles from {journal_list_file}")
     
-    # sort journal list in alphabetical order
-    journal_list.sort()
+            # sort journal list in alphabetical order
+            journal_list.sort()
+            
+            # remove duplicates from journal list
+            journal_list = list(dict.fromkeys(journal_list))
+            print(f" After removing duplicates, {len(journal_list)} unique journal titles will be used.\n")
 
-    normalised_journal_titles = {
-        normalise_journal_name(j): j
-        for j in journal_list
-    }
+        normalised_journal_titles = {
+            normalise_journal_name(j): j
+            for j in journal_list
+        }
     
     # html caching
     html_dir = rel_path + "html"
@@ -1424,70 +1704,83 @@ def main():
         print(f" Normal or Fetch-only mode: I will cache HTML pages under: {html_dir}")
 
     # ask user to enter the candidate number to start on (default 1)
-    start_candidate_num_str = input("\n Enter the candidate number to start processing from (default 1):\n ")
-    if not start_candidate_num_str.strip():
+    if ACCEPT_DEFAULTS:
+        print("\n Accepting default start candidate number: 1.\n")
         start_candidate_num = 1
     else:
-        try:
-            start_candidate_num = int(start_candidate_num_str.strip())
-        except ValueError:
-            print(" Invalid candidate number entered, defaulting to 1.")
+        start_candidate_num_str = input("\n Enter the candidate number to start processing from (default 1):\n ")
+        if not start_candidate_num_str.strip():
             start_candidate_num = 1
-    
-    if start_candidate_num < 1 or start_candidate_num > len(df_hr):
-        print(f" Invalid candidate number {start_candidate_num}, must be between 1 and {len(df_hr)}. Defaulting to 1.")
-        start_candidate_num = 1
-    print(f" Starting processing from candidate number {start_candidate_num}...\n")
-    df_hr = df_hr.iloc[start_candidate_num - 1 :].reset_index(drop=True)
+        else:
+            try:
+                start_candidate_num = int(start_candidate_num_str.strip())
+            except ValueError:
+                print(" Invalid candidate number entered, defaulting to 1.")
+                start_candidate_num = 1
+        
+        if start_candidate_num < 1 or start_candidate_num > len(df_hr):
+            print(f" Invalid candidate number {start_candidate_num}, must be between 1 and {len(df_hr)}. Defaulting to 1.")
+            start_candidate_num = 1
+        print(f" Starting processing from candidate number {start_candidate_num}...\n")
+        df_hr = df_hr.iloc[start_candidate_num - 1 :].reset_index(drop=True)
     
     # ask user to enter the candidate number to stop on (default last)
-    end_candidate_num_str = input(
-        f"\n Enter the candidate number to stop processing on (default {len(df_hr) + start_candidate_num - 1}):\n "
-    )
-    if not end_candidate_num_str.strip():
-        end_candidate_num = len(df_hr) + start_candidate_num - 1
+    default_last = 5#################### len(df_hr) + start_candidate_num - 1
+    if ACCEPT_DEFAULTS:
+        print(f"\n Accepting default last candidate number: {default_last}.\n")
+        end_candidate_num = default_last
     else:
-        try:
-            end_candidate_num = int(end_candidate_num_str.strip())
-        except ValueError:
-            print(f" Invalid candidate number entered, defaulting to {len(df_hr) + start_candidate_num - 1}.")
-            end_candidate_num = len(df_hr) + start_candidate_num - 1
-    if end_candidate_num < start_candidate_num or end_candidate_num > (len(df_hr) + start_candidate_num - 1):
-        print(f" Invalid candidate number {end_candidate_num}, must be between {start_candidate_num} and {len(df_hr) + start_candidate_num - 1}.")
-        end_candidate_num = len(df_hr) + start_candidate_num - 1
+        end_candidate_num_str = input(
+            f"\n Enter the candidate number to stop processing on (default {default_last}):\n "
+        )
+        if not end_candidate_num_str.strip():
+            end_candidate_num = default_last
+        else:
+            try:
+                end_candidate_num = int(end_candidate_num_str.strip())
+            except ValueError:
+                print(f" Invalid candidate number entered, defaulting to {default_last}.")
+                end_candidate_num = default_last
+        if end_candidate_num < start_candidate_num or end_candidate_num > (default_last):
+            print(f" Invalid candidate number {end_candidate_num}, must be between {start_candidate_num} and {default_last}.")
+            end_candidate_num = default_last
     print(f" Stopping processing on candidate number {end_candidate_num}...\n")
     df_hr = df_hr.iloc[: end_candidate_num - start_candidate_num + 1].reset_index(drop=True)
     
     if not OFFLINE_MODE:
-        # get the typical delay to use to avoid blocking
-        print("\n To reduce the chance of being blocked by Google Scholar, I need to wait for a random time period between web requests.")
-        print(" The longer the wait time, the less likely you are to be blocked, but the longer the total processing time will be.\n")
-        typical_delay_str = input(" Enter the typical delay in seconds between requests (default 8.0):\n ") 
-        if not typical_delay_str.strip():
+        if ACCEPT_DEFAULTS:
+            print("\n Accepting default delay and retry settings.\n")
             typical_delay = 8.0
+            max_block_retries = MAX_BLOCK_RETRIES_DEFAULT
         else:
-            try:
-                typical_delay = float(typical_delay_str.strip())
-            except ValueError:
-                print(" Invalid delay entered, defaulting to 8.0 seconds.")
+            # get the typical delay to use to avoid blocking
+            print("\n To reduce the chance of being blocked by Google Scholar, I need to wait for a random time period between web requests.")
+            print(" The longer the wait time, the less likely you are to be blocked, but the longer the total processing time will be.\n")
+            typical_delay_str = input(" Enter the typical delay in seconds between requests (default 8.0):\n ") 
+            if not typical_delay_str.strip():
                 typical_delay = 8.0
-                if typical_delay <= 0.0:
+            else:
+                try:
+                    typical_delay = float(typical_delay_str.strip())
+                except ValueError:
+                    print(" Invalid delay entered, defaulting to 8.0 seconds.")
                     typical_delay = 8.0
-                    print(" Sorry. Second law of thermodynamics forbids going backwards in time.")
-        print(f" Using a typical delay of {typical_delay} seconds between requests.\n")
-        
-        # get max block retries
-        max_block_retries_str = input(
-            f" Enter the maximum number of retries if blocking is suspected (default {MAX_BLOCK_RETRIES_DEFAULT}):\n "
-        )
-        if not max_block_retries_str.strip():
-            max_block_retries = MAX_BLOCK_RETRIES_DEFAULT
-        elif max_block_retries_str.strip().isdigit():
-            max_block_retries = int(max_block_retries_str.strip())
-        else:
-            print(f" Invalid input, defaulting to {MAX_BLOCK_RETRIES_DEFAULT}.")
-            max_block_retries = MAX_BLOCK_RETRIES_DEFAULT
+                    if typical_delay <= 0.0:
+                        typical_delay = 8.0
+                        print(" Sorry. Second law of thermodynamics forbids going backwards in time.")
+            print(f" Using a typical delay of {typical_delay} seconds between requests.\n")
             
+            # get max block retries
+            max_block_retries_str = input(
+                f" Enter the maximum number of retries if blocking is suspected (default {MAX_BLOCK_RETRIES_DEFAULT}):\n "
+            )
+            if not max_block_retries_str.strip():
+                max_block_retries = MAX_BLOCK_RETRIES_DEFAULT
+            elif max_block_retries_str.strip().isdigit():
+                max_block_retries = int(max_block_retries_str.strip())
+            else:
+                print(f" Invalid input, defaulting to {MAX_BLOCK_RETRIES_DEFAULT}.")
+                max_block_retries = MAX_BLOCK_RETRIES_DEFAULT
     else:
         typical_delay = 0.01  # minimal delay in offline mode
             
@@ -1569,10 +1862,8 @@ def main():
         print(" No records to write (no profiles scraped). Bye!\n")
         return
     
-    # write results to CSV and xlsx
-    output_file = rel_path + "snappy_results_" + time.strftime("%Y-%m-%d_%H-%M") + ".xlsx"
-    
-    print(f"\n Writing records to: {output_file} ...")
+    # write to output files    
+    timestamp = time.strftime("%Y-%m-%d_%H-%M")
     
     fieldnames = list(records[0].keys())
     
@@ -1603,12 +1894,12 @@ def main():
         "h_index_5y": "H-index (5y)",
         "article_count": "Total Number of Publications",
         "journal_count_tot": "Total Number of Publications in Journal List",
-        "journal_count_tot_fa": "Total Number of First Author Publications in Journal List",
-        "journal_count_tot_sa": "Total Number of Second Author Publications in Journal List",
-        "journal_count_tot_la": "Total Number of Last Author Publications in Journal List",
-        "journal_average_num_authors": "Average Number of Authors in Journal List Publications",
-        #"journal_summary": "Publication Summary",       
-        "summary": "Full Profile Summary",
+        "journal_count_tot_fa": "Number of First Author Publications in Journal List",
+        "journal_count_tot_sa": "Number of Second Author Publications in Journal List",
+        "journal_count_tot_la": "Number of Last Author Publications in Journal List",
+        "journal_average_num_authors": "Average Number of Authors in Journal List Publications",      
+        "summary_markdown": "Full Candidate Research Summary - MD",
+        "summary_plaintext": "Full Candidate Research Summary - Double Click to Open / Use Up & Down Cursor Arrows to Navigate within Field / Escape to Exit",        
     }
 
     for j in journal_list:
@@ -1616,19 +1907,35 @@ def main():
 
     pretty_headers = [column_labels[col] for col in fieldnames]
 
+    # write to xlsx
+    xlsx_output_file = rel_path + "snappy_report_" + round_code + "_" + timestamp + ".xlsx"
+    
+    print(f"\n Writing records to: {xlsx_output_file} ...")
+    
     try:
         df = pd.DataFrame(records, columns=fieldnames)
         df.columns = pretty_headers
         # remove columns we don't want in the Excel output for now
         df = df.drop(columns=["Average Number of Authors in Journal List Publications"])
-        df.to_excel(output_file, index=False)    
+        df = df.drop(columns=["Full Candidate Research Summary - MD"])        
+        df.to_excel(xlsx_output_file, index=False)    
     except Exception as e:
         print(f"\n ERROR - Could not write Excel file. Exception: {type(e).__name__}: {e}")
         return
 
- 
+    # write to docx
+    docx_output_file = rel_path + "snappy_report_" + round_code + "_" + timestamp + ".docx"
+
+    print(f"\n Writing summary report to: {docx_output_file} ...")
+    try:
+        write_summaries_docx(records, round_code, round_description, docx_output_file)
+    except Exception as e:
+        print(f"\n ERROR - Could not write Word document. Exception: {type(e).__name__}: {e}")
+        return
+        
+
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
-    print(f"\n All done! Wrote {len(records)} rows to {output_file}.")
+    print(f"\n All done! Wrote {len(records)} rows to {xlsx_output_file} and {docx_output_file}.")
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
 
     # optional bonus step: step through URLs in default browser
