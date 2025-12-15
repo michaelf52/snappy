@@ -135,13 +135,55 @@ def extract_journal_name(raw_info: str) -> str:
 
 # ========================
 
+# match author names with candidate name, determine position and highlight matches
+
+def match_authors(
+    author_list: List[str],
+    full_name: str,
+    strict_initials_check: bool = False
+) -> Tuple[
+    List[str],  # highlighted_author_list
+    int | None, # position
+    int         # count_highlighted
+]:
+    
+    if DEBUG_MODE: print(f"\n Matching authors against candidate full name '{full_name}'")
+    if DEBUG_MODE: print(f" Strict initials check = {strict_initials_check}")
+    highlighted_author_list = []
+    position = None
+    count_highlighted = 0
+    for a in author_list:
+        if compare_initialled_name_with_full_name(
+            initialled_name = a,
+            full_name = full_name,
+            strict_initials_check = strict_initials_check
+        ):
+            if DEBUG_MODE: print(f"  Matched author: {a} with candidate's name {full_name}")
+            # highlight the matched author
+            highlighted_author_list.append(f"**{a}**")
+            count_highlighted += 1
+        else:
+            if DEBUG_MODE: print(f"  Did not match author: {a} with candidate name {full_name}")
+            highlighted_author_list.append(a)
+            
+    for i, author in enumerate(highlighted_author_list):
+        if author.startswith("**") and author.endswith("**"):
+            if DEBUG_MODE: print(f"  Candidate matched author at position {i + 1}: {author}")
+            position = i + 1
+            break            
+                        
+    return highlighted_author_list, position, count_highlighted
+
+# ========================
+
 # compare author name to candidate name
 # candidate name is assumed to be full name format "Firstname Middlename Surname"
 # author name is assumed to be in "Initials Surname" format
 
 def compare_initialled_name_with_full_name(
     initialled_name: str,
-    full_name: str
+    full_name: str,
+    strict_initials_check: bool = False
 ) -> bool:
     
     global DEBUG_MODE
@@ -152,23 +194,28 @@ def compare_initialled_name_with_full_name(
     found_hyphen_initialled_name = False
     if "-" in initialled_name:
         found_hyphen_initialled_name = True
-        if DEBUG_MODE: print(f"   Detected hyphen in initialled name '{initialled_name}' => multi-barrelled surname assumed.")
-        # count the number of hyphens in the full name
-        hyphen_count = initialled_name.count("-")
-        if hyphen_count > 1:
-            print(f"   ERROR - Multiple hyphens ({hyphen_count}) detected in initialled name '{initialled_name}'")
-            exit(1)        
+        if DEBUG_MODE: print(f"   Detected hyphen in initialled name '{initialled_name}'.")    
         
     found_hyphen_full_name = False
     if "-" in full_name:
         found_hyphen_full_name = True
-        if DEBUG_MODE: print(f"   Detected hyphen in full name '{full_name}' => multi-barrelled surname assumed.")
-        # count the number of hyphens in the full name
-        hyphen_count = full_name.count("-")
-        if hyphen_count > 1:
-            print(f"   ERROR - Multiple hyphens ({hyphen_count}) detected in full name '{full_name}'")
-            exit(1)
-    
+        if DEBUG_MODE: print(f"   Detected hyphen in full name '{full_name}' .")
+ 
+    # decompose initialled name
+    initialled_name_parts = initialled_name.strip().split(" ")
+    if len(initialled_name_parts) >= 2:
+        initialled_name_initials = initialled_name_parts[0]
+        # assume the rest forms the surname (including any multi-barrelled parts)
+        initialled_name_surname = " ".join(initialled_name_parts[1:])
+    else:
+        if initialled_name == "...":
+            if DEBUG_MODE: print(f"  Return False <= Initialled name is '...'.")
+            return False
+        else:
+            if DEBUG_MODE: print(f"  Warning - Initialled name '{initialled_name}' does not decompose into initials and surname properly. I will treat this as the surname only.")
+            initialled_name_surname = initialled_name
+            initialled_name_initials = ""
+        
     # decompose full name and reconstruct as an initialled name
     full_name_parts = full_name.strip().split(" ")    
     
@@ -179,36 +226,67 @@ def compare_initialled_name_with_full_name(
         full_name_surname = full_name_parts[-1]
         # add any preceding parts that start with lowercase letters to the surname otherwise treat as initials
         for part in reversed(full_name_parts[:-1]):
-            if not part.isalpha():
-                if DEBUG_MODE: print(f"   '{part}' contains non-alphabetic characters, skipping.")
-                continue
-            elif part[0] != part[0].upper():
+            if part[0] != part[0].upper():
                 if DEBUG_MODE: print(f"   First letter '{part[0]}' is not uppercase => add to surname.")
                 full_name_surname = part + " " + full_name_surname
             else:
                 if DEBUG_MODE: print(f"   First letter '{part[0]}' is uppercase => add it to the initials string.")
                 full_name_initials = part[0] + full_name_initials
     else:
-        full_name_initials = ""
-        full_name_surname = full_name_parts[0]       
+        raise AuthorMatchError(f"Full name '{full_name}' does not decompose into initials and surname properly.")
     
     full_name_initialised = " ".join([full_name_initials, full_name_surname]) 
     
     # remove hyphens from both names if either has a hyphen
     if found_hyphen_initialled_name or found_hyphen_full_name:
         initialled_name = initialled_name.replace("-", " ")
-        full_name_initialised = full_name_initialised.replace("-", " ")
+        full_name_initialised = full_name_initialised.replace("-", " ")       
+        initialled_name_surname = initialled_name_surname.replace("-", " ")
+        full_name_surname = full_name_surname.replace("-", " ")
+        initialled_name_initials = initialled_name_initials.replace("-", "")
+        full_name_initials = full_name_initials.replace("-", "")    
         if DEBUG_MODE: print(f"   Hyphens removed for comparison: '{initialled_name}' and '{full_name_initialised}'")
+ 
+    # compare surnames
+    if DEBUG_MODE: print(f"   Comparing surnames: '{initialled_name_surname}' with '{full_name_surname}'")
     
-    # compare names
-    if DEBUG_MODE: print(f"   Comparing names: '{initialled_name}' with '{full_name_initialised}'")
-    
-    if initialled_name.lower() != full_name_initialised.lower():
-        if DEBUG_MODE: print(f"   Return False <= Names do not match: '{initialled_name}' != '{full_name_initialised}")
+    if initialled_name_surname.lower() != full_name_surname.lower():
+        if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialled_name_surname}' != '{full_name_surname}")
         return False
+    else:
+        if DEBUG_MODE: print(f"   Surnames match: '{initialled_name_surname}' == '{full_name_surname}'")
     
-    if DEBUG_MODE: print(f"  Return True <=  '{initialled_name}' == '{full_name_initialised}'")
-    return True
+    # compare initials
+    if DEBUG_MODE: print(f"   Comparing initials: '{initialled_name_initials}' with '{full_name_initials}'")
+    if len(initialled_name_initials) == len(full_name_initials):
+        if DEBUG_MODE: print(f"   Initials length match: {len(initialled_name_initials)} == {len(full_name_initials)}")
+        if initialled_name_initials.lower() == full_name_initials.lower():
+            if DEBUG_MODE: print(f"   Initials match: '{initialled_name_initials}' == '{full_name_initials}'")
+            if DEBUG_MODE: print(f"  Return True <=  '{initialled_name}' == '{full_name_initialised}'")
+            return True
+        else:
+            if DEBUG_MODE: print(f"   Return False <= Initials do not match: '{initialled_name_initials}' != '{full_name_initials}'")
+            return False
+    else:
+        if strict_initials_check:
+            if DEBUG_MODE: print(f"   Return False <= Strict initials check enabled and lengths do not match: {len(initialled_name_initials)} != {len(full_name_initials)}")
+            return False
+        # initials length do not match - allow for missing middle initials in either name
+        if DEBUG_MODE: print(f"   Initials length do not match: {len(initialled_name_initials)} != {len(full_name_initials)}")
+        # identify the shorter and longer initials strings and truncate the longer one
+        if len(initialled_name_initials) < len(full_name_initials):
+            shorter_initials = initialled_name_initials
+            longer_initials = full_name_initials[:len(shorter_initials)]
+        else:
+            shorter_initials = full_name_initials
+            longer_initials = initialled_name_initials[:len(shorter_initials)]
+        # compare the truncated initials
+        if shorter_initials.lower() != longer_initials.lower():
+            if DEBUG_MODE: print(f"   Return False <= Initials do not match (missing initials): '{initialled_name_initials}' != '{full_name_initials}'")
+            return False
+        else:
+            if DEBUG_MODE: print(f"   Return True <= Initials match (allowing for missing initials): '{initialled_name_initials}' == '{full_name_initials}'")
+            return True
 
 # =========================
 
@@ -403,81 +481,81 @@ def scrape_it(
     cit_all: Optional[int] = None
     cit_5y: Optional[int] = None
 
-    # get the front matter data only on the first page
+    # get the front matter data
+    # get it from all pages so that I can keep function signature consistent
     # ---------------------------------------------------------------------
     # institution / affiliation tag:
     #   <div class="gsc_prf_il">The University of Excellence and other Buzzwords</div>
     # ---------------------------------------------------------------------
-    if page_idx == 0:
-        # institution
-        inst_divs = soup.find_all("div", class_="gsc_prf_il")
-        if inst_divs:
-            institution = inst_divs[0].get_text(strip=True)
-        if DEBUG_MODE: print(f"\n Institution: {institution if institution else 'None found'}")
+    # institution
+    inst_divs = soup.find_all("div", class_="gsc_prf_il")
+    if inst_divs:
+        institution = inst_divs[0].get_text(strip=True)
+    if DEBUG_MODE: print(f"\n Institution: {institution if institution else 'None found'}")
 
-        # ---------------------------------------------------------------------
-        # research areas / interests tags:
-        #   <div id="gsc_prf_int">
-        #       <a class="gsc_prf_inta">Area 1</a>
-        #       <a class="gsc_prf_inta">Area 2</a>
-        #   </div>
-        # ---------------------------------------------------------------------
-        ra: List[str] = []
-        int_div = soup.find("div", id="gsc_prf_int")
-        if int_div:
-            for a in int_div.find_all("a", class_="gsc_prf_inta"):
-                text = a.get_text(strip=True)
-                if text:
-                    ra.append(text)
-        research_areas = ra
+    # ---------------------------------------------------------------------
+    # research areas / interests tags:
+    #   <div id="gsc_prf_int">
+    #       <a class="gsc_prf_inta">Area 1</a>
+    #       <a class="gsc_prf_inta">Area 2</a>
+    #   </div>
+    # ---------------------------------------------------------------------
+    ra: List[str] = []
+    int_div = soup.find("div", id="gsc_prf_int")
+    if int_div:
+        for a in int_div.find_all("a", class_="gsc_prf_inta"):
+            text = a.get_text(strip=True)
+            if text:
+                ra.append(text)
+    research_areas = ra
 
-        if DEBUG_MODE:
-            if research_areas:
-                print(" Research areas: " + ", ".join(research_areas))
-            else:
-                print(" Research areas: None found")
+    if DEBUG_MODE:
+        if research_areas:
+            print(" Research areas: " + ", ".join(research_areas))
+        else:
+            print(" Research areas: None found")
 
-        # ---------------------------------------------------------------------
-        # h-index and citations table tags:
-        # <table id="gsc_rsb_st">
-        #   rows for "Citations", "h-index", "i10-index"
-        #   columns: [label, All, Since YYYY]
-        # ---------------------------------------------------------------------
-        table = soup.find("table", id="gsc_rsb_st")
-        if table:
-            for row in table.find_all("tr"):
-                cells = row.find_all("td")
-                if not cells:
-                    continue
+    # ---------------------------------------------------------------------
+    # h-index and citations table tags:
+    # <table id="gsc_rsb_st">
+    #   rows for "Citations", "h-index", "i10-index"
+    #   columns: [label, All, Since YYYY]
+    # ---------------------------------------------------------------------
+    table = soup.find("table", id="gsc_rsb_st")
+    if table:
+        for row in table.find_all("tr"):
+            cells = row.find_all("td")
+            if not cells:
+                continue
 
-                label = cells[0].get_text(strip=True).lower()
+            label = cells[0].get_text(strip=True).lower()
 
-                if "citations" in label:
-                    if len(cells) >= 2:
-                        try:
-                            cit_all = int(cells[1].get_text(strip=True))
-                        except ValueError:
-                            cit_all = None
-                    if len(cells) >= 3:
-                        try:
-                            cit_5y = int(cells[2].get_text(strip=True))
-                        except ValueError:
-                            cit_5y = None
+            if "citations" in label:
+                if len(cells) >= 2:
+                    try:
+                        cit_all = int(cells[1].get_text(strip=True))
+                    except ValueError:
+                        cit_all = None
+                if len(cells) >= 3:
+                    try:
+                        cit_5y = int(cells[2].get_text(strip=True))
+                    except ValueError:
+                        cit_5y = None
 
-                elif "h-index" in label:
-                    if len(cells) >= 2:
-                        try:
-                            h_all = int(cells[1].get_text(strip=True))
-                        except ValueError:
-                            h_all = None
-                    if len(cells) >= 3:
-                        try:
-                            h_5y = int(cells[2].get_text(strip=True))
-                        except ValueError:
-                            h_5y = None
-        if DEBUG_MODE:
-            print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
-            print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
+            elif "h-index" in label:
+                if len(cells) >= 2:
+                    try:
+                        h_all = int(cells[1].get_text(strip=True))
+                    except ValueError:
+                        h_all = None
+                if len(cells) >= 3:
+                    try:
+                        h_5y = int(cells[2].get_text(strip=True))
+                    except ValueError:
+                        h_5y = None
+    if DEBUG_MODE:
+        print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
+        print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
 
     # journal matching on all pages
     # ---------------------------------------------------------------------
@@ -521,7 +599,7 @@ def scrape_it(
             matched_journal = normalised_journal_titles.get(journal_norm)
 
             if matched_journal:
-                print(f" Journal match: '{raw_info}' -> '{matched_journal}'")
+                print(f"\n Journal match: '{raw_info}' -> '{matched_journal}'")
                 journal_match_counts[matched_journal] += 1
 
                 # ---- capture full publication details ----
@@ -561,42 +639,65 @@ def scrape_it(
                 if DEBUG_MODE: print(f" Author list: {author_list}")
                                 
                 # determine which authors match the candidate's name
-                highlighted_author_list = []
-                counter = 0
-                count_highlighted = 0
-                for a in author_list:
-                    counter += 1
-                    
-                    if compare_initialled_name_with_full_name(
-                        initialled_name = a,
-                        full_name = candidate_gs_name or ""
-                    ):
-                        if DEBUG_MODE: print(f"  Matched author: {a} with candidate's name {candidate_gs_name}")
-                        # highlight the matched author
-                        highlighted_author_list.append(f"**{a}**")
-                        count_highlighted += 1
-                        if counter == 1:
-                            journal_match_counts_fa[matched_journal] += 1
-                        elif counter == 2:
-                            journal_match_counts_sa[matched_journal] += 1
-                        elif counter == len(author_list):
-                            journal_match_counts_la[matched_journal] += 1
-                    else:
-                        if DEBUG_MODE: print(f"  Did not match author: {a} with candidate name {candidate_gs_name}")
-                        highlighted_author_list.append(a)
+                
+                (
+                    highlighted_author_list, 
+                    position, 
+                    count_highlighted) = match_authors(
+                    author_list = author_list,
+                    full_name = candidate_gs_name or "",
+                    strict_initials_check = False
+                )
                                     
                 '''if count_highlighted == 0:
                     raise AuthorMatchWarning(
                         f"No author matched candidate '{candidate_gs_name}' "
                         f"for journal '{matched_journal}'. "
                         f"Authors found: {', '.join(author_list)}"
-                    )
-                elif count_highlighted > 1:
-                    raise AuthorMatchWarning(
-                        f"Multiple ({count_highlighted}) authors matched candidate "
-                        f"'{candidate_gs_name}' for journal '{matched_journal}'. "
-                        f"Authors found: {', '.join(author_list)}"
                     )'''
+                    
+                if count_highlighted > 1:
+                    # request user intervention
+                    print(f"\n Multiple ({count_highlighted}) authors matched candidate "
+                        f"'{candidate_gs_name}' for journal '{matched_journal}'.\n"
+                        f" Authors found: {', '.join(author_list)}\n"
+                        f" Press c to do a stricter name check or s to stop...\n")
+                    answer = input(" Enter choice (c/s): ").strip().lower()
+                    if answer == "s":
+                        raise AuthorMatchError(
+                            f"Multiple ({count_highlighted}) authors matched candidate "
+                            f"'{candidate_gs_name}' for journal '{matched_journal}'. "
+                            f"Authors found: {', '.join(author_list)}"
+                        )
+                    (
+                        highlighted_author_list, 
+                        position, 
+                        count_highlighted) = match_authors(
+                        author_list = author_list,
+                        full_name = candidate_gs_name or "",
+                        strict_initials_check = True
+                    )
+                        
+                    if count_highlighted > 1:
+                        # request user intervention
+                        print(f"\n Multiple ({count_highlighted}) authors matched candidate "
+                            f"'{candidate_gs_name}' for journal '{matched_journal}'.\n"
+                            f" Authors found: {', '.join(author_list)}\n"
+                            f" Please review and press c to continue or s to stop...\n")
+                        answer = input(" Enter choice (c/s): ").strip().lower()
+                        if answer == "s":
+                            raise AuthorMatchError(
+                                f"Multiple ({count_highlighted}) authors matched candidate "
+                                f"'{candidate_gs_name}' for journal '{matched_journal}'. "
+                                f"Authors found: {', '.join(author_list)}"
+                            )
+                    
+                if position == 1:
+                    journal_match_counts_fa[matched_journal] += 1
+                elif position == 2:
+                    journal_match_counts_sa[matched_journal] += 1
+                elif position == len(author_list):
+                    journal_match_counts_la[matched_journal] += 1
                     
                 journal_num_authors[matched_journal] += len(author_list)
                 
@@ -630,7 +731,7 @@ def scrape_it(
         journal_match_details,
         article_count,
     )
-            
+                        
 # ========================
 
 # step through all GS pages and scrape profile info 
@@ -887,9 +988,9 @@ def create_summary(
     if is_empty_record:
         summary_lines.append("")
         if markdown:
-            summary_lines.append("### No Google Scholar profile data found.")
+            summary_lines.append("### No Google Scholar profile data found")
         else:
-            summary_lines.append("No Google Scholar profile data found.")
+            summary_lines.append("No Google Scholar profile data found")
         summary_lines.append("")
         summary = "\n".join(summary_lines)
         
@@ -945,6 +1046,7 @@ def create_summary(
         summary_lines.append("Journal / Conference Article Summary:")
         summary_lines.append("(Articles from Journal List Only)")
     
+    found_at_least_one = False
     for journal in journal_list:
         count = journal_counts.get(journal, 0)
         count_fa = journal_counts_fa.get(journal, 0)
@@ -954,6 +1056,7 @@ def create_summary(
         details = journal_details.get(journal, [])
 
         if count > 0:
+            found_at_least_one = True
             if markdown:
                 summary_lines.append(f"### {journal}")
                 summary_lines.append(f"**Number of articles**: {count}")   
@@ -996,10 +1099,15 @@ def create_summary(
 
                     summary_lines.append(line)
                         
-
             # blank line between journals for readability
             summary_lines.append("")
 
+    if not found_at_least_one:
+        if markdown:
+            summary_lines.append("#### No articles found in the specified journal list")
+        else:
+            summary_lines.append("No articles found in the specified journal list.")
+        
     # remove trailing line
     while summary_lines and summary_lines[-1] == "":
         summary_lines.pop()
@@ -1086,6 +1194,7 @@ def _split_url_trailing_punct(url: str) -> tuple[str, str]:
 # =======================
 
 # adds runs to an existing paragraph
+
 def add_md_inline_runs(p, text: str) -> None:
     i = 0
     n = len(text)
@@ -1213,8 +1322,8 @@ def set_document_font(doc: Document, name="Arial", size_pt=10):
 
 def set_moderate_margins(doc):
     section = doc.sections[0]
-    section.top_margin = Inches(1)
-    section.bottom_margin = Inches(1)
+    section.top_margin = Inches(0.75)
+    section.bottom_margin = Inches(0.75)
     section.left_margin = Inches(0.75)
     section.right_margin = Inches(0.75)
 
@@ -1271,18 +1380,21 @@ def write_summaries_docx(
         hpf.space_after = Pt(6)
 
     doc.add_heading("Candidate Summary Report", level=1)
-    doc.add_heading(round_code, level=4)
+    doc.add_heading("HR Code: " + round_code, level=4)
     doc.add_heading(round_description, level=4)
     doc.add_paragraph("")
 
-    #generated_at = time.strftime("%Y-%m-%d %H:%M")
-    #doc.add_heading(f"Generated at {generated_at}", level=4)
+    generated_at = time.strftime("%Y-%m-%d %H:%M")
+    doc.add_heading(f"Generated at {generated_at}", level=4)
 
     doc.add_paragraph("")
     doc.add_heading("Notes regarding journal/conference article lists", level=4)
     doc.add_paragraph("The articles listed for each candidate are the articles published in journals/conference proceedings given the supplied journal list only.", style="List Bullet")
     doc.add_paragraph("The number of citations for an article is shown in square brackets.", style="List Bullet")
     doc.add_paragraph("Articles for a particular journal are ordered by the number of citations.", style="List Bullet")
+    doc.add_paragraph("The candidate's name is highlighted in bold in the author list.", style="List Bullet")
+    doc.add_paragraph("If multiple authors match the candidate's name (very rare), all matching authors are highlighted in bold.", style="List Bullet")
+    doc.add_paragraph("In this case the candidate is assumed to have the higher position in the list.", style="List Bullet")
     doc.add_page_break()
 
     for idx, record in enumerate(records, start=1):
@@ -1377,10 +1489,10 @@ def process_profile(
         
     except AuthorMatchError:
         raise        
-    except Exception as e:
-        print(f" ERROR  - Detected error while processing cached HTML for {url}.")
+    except Exception as e:  # catch-all for unexpected errors
+        print(f" FATAL ERROR  - Detected error while processing cached HTML for {url}.")
         print(f" Details: {e}")
-        return empty_record(candidate, journal_list)
+        exit(1)
 
     if not info_found:
         print(f" Warning - No scrapable pages found for URL: {url}")
@@ -1780,7 +1892,7 @@ def main():
         df_hr = df_hr.iloc[start_candidate_num - 1 :].reset_index(drop=True)
     
     # ask user to enter the candidate number to stop on (default last)
-    default_last = 5## len(df_hr) + start_candidate_num - 1
+    default_last = len(df_hr) + start_candidate_num - 1
     if ACCEPT_DEFAULTS:
         print(f"\n Accepting default last candidate number: {default_last}.\n")
         end_candidate_num = default_last
