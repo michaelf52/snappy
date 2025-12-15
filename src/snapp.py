@@ -16,10 +16,11 @@ import random
 import argparse
 from docx import Document
 from docx.shared import Pt
+from docx.shared import Inches
 from docx.document import Document as DocxDocument
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
-from docx.shared import Inches
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 
 # =========================
 
@@ -31,7 +32,9 @@ NORMAL_MODE = True
 DEBUG_MODE = False
 
 PUNCT = str.maketrans("", "", string.punctuation)
-LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^)]+)\)")
+
+URL_RE = re.compile(r"https?://[^\s]+")
+URL_TRAILING_PUNCT = ".,;:)]}>"  # stuff we often want to *not* include in the link
 
 MAX_BLOCK_RETRIES_DEFAULT = 0
 BLOCKING_SUSPECTED = False
@@ -599,7 +602,7 @@ def scrape_it(
                 
                 authors = ", ".join(highlighted_author_list)
 
-                full_entry = f'{authors} | {title} | {journal_info} | cited_by={cited_by} | {year}'
+                full_entry = f'{authors} | {title} | {journal_info} | {cited_by} | {year}'
                 journal_match_details[matched_journal].append(full_entry)
 
     if not FETCH_ONLY_MODE and DEBUG_MODE:
@@ -903,7 +906,8 @@ def create_summary(
     summary_lines.append("")
     if markdown:
         summary_lines.append(f"## Google Scholar Profile Summary")
-        summary_lines.append(f"URL: {record.get('gs_url', 'UNKNOWN')}")
+        summary_lines.append(f"**URL**: {record.get('gs_url', 'UNKNOWN')}")
+        summary_lines.append("")
         summary_lines.append(f"**Current Institution**: {record.get('gs_institution', 'UNKNOWN')}")
         summary_lines.append(f"**Research Areas**: {record.get('gs_research_areas', 'UNKNOWN')}")
         summary_lines.append(f"**Citations (All | 5y)**: {record.get('citations_all', 0)} | {record.get('citations_5y', 0)}")
@@ -973,7 +977,7 @@ def create_summary(
                     if len(parts) == 5:
                         authors, title, journal_info, cited_by, year = parts
                         # replace cited_by= with just the number
-                        cited_by = cited_by.replace("cited_by=", "cited by ").strip()
+                        # cited_by = cited_by.replace("cited_by=", "cited by ").strip()
                         line = f'- {authors}, "{title}", {journal_info} **[{cited_by}]**'
                     else:
                         # fallback if format is unexpected
@@ -984,7 +988,7 @@ def create_summary(
                     if len(parts) == 5:
                         authors, title, journal_info, cited_by, year = parts
                         # replace cited_by= with just the number
-                        cited_by = cited_by.replace("cited_by=", "cited by ").strip()
+                        # cited_by = cited_by.replace("cited_by=", "cited by ").strip()
                         line = f'- {authors}, "{title}", {journal_info} [{cited_by}]'
                     else:
                         # fallback if format is unexpected
@@ -1033,23 +1037,68 @@ def normalise_punctuation(summary: str) -> str:
 
     return summary.strip()
 
+# =========================
+
+# Add a clickable hyperlink to a paragraph.
+
+def add_hyperlink(paragraph, url: str, text: str | None = None):
+
+    part = paragraph.part
+    r_id = part.relate_to(url, RT.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+
+    new_run = OxmlElement("w:r")
+    rPr = OxmlElement("w:rPr")
+
+    # make it look like a typical hyperlink (blue + underline).
+    u = OxmlElement("w:u")
+    u.set(qn("w:val"), "single")
+    rPr.append(u)
+
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0563C1")
+    rPr.append(color)
+
+    new_run.append(rPr)
+
+    t = OxmlElement("w:t")
+    t.text = text if text is not None else url
+    new_run.append(t)
+
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+    return hyperlink
+
 # =======================
 
-def add_md_inline_runs(p, text: str) -> None:
-    """
-    Adds runs to an existing paragraph, converting:
-      - **bold**
-      - _italic_
-    Simple, deterministic parser (no nesting guarantees beyond common cases).
-    """
-    i = 0
-    while i < len(text):
-        # find next bold or italic marker
-        next_bold = text.find("**", i)
-        next_ital = text.find("_", i)
+# peel trailing punctuation off the URL (so the link is clean)
 
-        # pick the earliest marker that exists
-        candidates = [(next_bold, "bold"), (next_ital, "ital")]
+def _split_url_trailing_punct(url: str) -> tuple[str, str]:
+    
+    trail = ""
+    while url and url[-1] in URL_TRAILING_PUNCT:
+        trail = url[-1] + trail
+        url = url[:-1]
+    return url, trail
+
+# =======================
+
+# adds runs to an existing paragraph
+def add_md_inline_runs(p, text: str) -> None:
+    i = 0
+    n = len(text)
+
+    while i < n:
+        # find next URL / bold / italic marker
+        m_url = URL_RE.search(text, i)
+        j_url = m_url.start() if m_url else -1
+
+        j_bold = text.find("**", i)
+        j_ital = text.find("_", i)
+
+        candidates = [(j_url, "url"), (j_bold, "bold"), (j_ital, "ital")]
         candidates = [(pos, kind) for pos, kind in candidates if pos != -1]
         if not candidates:
             p.add_run(text[i:])
@@ -1057,39 +1106,52 @@ def add_md_inline_runs(p, text: str) -> None:
 
         j, kind = min(candidates, key=lambda x: x[0])
 
-        # add normal text before marker
+        # emit normal text before the token
         if j > i:
             p.add_run(text[i:j])
+
+        if kind == "url":
+            raw_url = m_url.group(0)
+            url, trailing = _split_url_trailing_punct(raw_url)
+
+            # hyperlink run
+            add_hyperlink(p, url, text=url)
+
+            # trailing punctuation after the link (normal text)
+            if trailing:
+                p.add_run(trailing)
+
+            i = m_url.end()
+            continue
 
         if kind == "bold":
             k = text.find("**", j + 2)
             if k == -1:
-                # unmatched -> treat as literal
+                # unmatched -> literal
                 p.add_run(text[j:])
                 return
             run_text = text[j + 2 : k]
             r = p.add_run(run_text)
             r.bold = True
             i = k + 2
-        else:  # ital
-            k = text.find("_", j + 1)
-            if k == -1:
-                p.add_run(text[j:])
-                return
-            run_text = text[j + 1 : k]
-            r = p.add_run(run_text)
-            r.italic = True
-            i = k + 1
+            continue
 
-# =========================
+        # ital
+        k = text.find("_", j + 1)
+        if k == -1:
+            p.add_run(text[j:])
+            return
+        run_text = text[j + 1 : k]
+        r = p.add_run(run_text)
+        r.italic = True
+        i = k + 1
+
+# ========================
+
+# adds a single markdown-ish line to a docx document
 
 def add_md_line(doc: "DocxDocument", line: str) -> None:
-    """
-    Adds ONE markdown-ish line to the doc, supporting:
-      - Headings: #..###### + space
-      - Bullets: "- " at start
-      - Inline bold/italics via add_md_inline_runs
-    """
+
     raw = line.rstrip("\n")
     if not raw.strip():
         doc.add_paragraph("")  # blank line
@@ -1114,15 +1176,6 @@ def add_md_line(doc: "DocxDocument", line: str) -> None:
     # normal paragraph
     p = doc.add_paragraph()
     add_md_inline_runs(p, raw)
-
-# =========================
-
-def add_md_block(doc: "DocxDocument", text: str) -> None:
-    """
-    Adds a multi-line markdown-ish block to a doc.
-    """
-    for line in text.splitlines():
-        add_md_line(doc, line)
 
 # =========================
 
@@ -1222,8 +1275,8 @@ def write_summaries_docx(
     doc.add_heading(round_description, level=4)
     doc.add_paragraph("")
 
-    generated_at = time.strftime("%Y-%m-%d %H:%M")
-    doc.add_heading(f"Generated at {generated_at}", level=4)
+    #generated_at = time.strftime("%Y-%m-%d %H:%M")
+    #doc.add_heading(f"Generated at {generated_at}", level=4)
 
     doc.add_paragraph("")
     doc.add_heading("Notes regarding journal/conference article lists", level=4)
@@ -1593,6 +1646,8 @@ def main():
         print (f" Using application round code: {round_code}\n")
         # remove round_code from round_description
         round_description = round_description[len(round_code):].strip(" -") 
+        # remove "- IN CONFERENCE" if present
+        round_description = round_description.replace(" - IN CONFERENCE", "").strip()
         
         # remove the first two rows of the data frame
         df_hr = df_hr.iloc[2:].reset_index(drop=True)
@@ -1725,7 +1780,7 @@ def main():
         df_hr = df_hr.iloc[start_candidate_num - 1 :].reset_index(drop=True)
     
     # ask user to enter the candidate number to stop on (default last)
-    default_last = 5#################### len(df_hr) + start_candidate_num - 1
+    default_last = 5## len(df_hr) + start_candidate_num - 1
     if ACCEPT_DEFAULTS:
         print(f"\n Accepting default last candidate number: {default_last}.\n")
         end_candidate_num = default_last
