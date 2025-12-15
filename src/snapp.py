@@ -1014,12 +1014,6 @@ def create_summary(
         summary_lines.append(f"**Citations (All | 5y)**: {record.get('citations_all', 0)} | {record.get('citations_5y', 0)}")
         summary_lines.append(f"**h-index (All | 5y)**: {record.get('h_index_all', 0)} | {record.get('h_index_5y', 0)}")
         summary_lines.append(f"**Total Articles**: {record.get('article_count', 0)}")
-        summary_lines.append(f"**Total Articles in the Journal List**: {record.get('journal_count_tot', 0)}")
-        summary_lines.append(f"**Total First Author Papers**: {record.get('journal_count_tot_fa', 0)}")
-        summary_lines.append(f"**Total Second Author Papers**: {record.get('journal_count_tot_sa', 0)}")
-        summary_lines.append(f"**Total Last Author Papers**: {record.get('journal_count_tot_la', 0)}")
-        #average_num_authors = record.get('journal_average_num_authors', 0)
-        #summary_lines.append(f"Average Number of Authors per Paper: {average_num_authors:.1f}")
         summary_lines.append("")
     else:
         summary_lines.append(f"Google Scholar Profile Summary:")
@@ -1030,21 +1024,30 @@ def create_summary(
         summary_lines.append(f"h-index (All | 5y): {record.get('h_index_all', 0)} | {record.get('h_index_5y', 0)}")
         summary_lines.append("")
         summary_lines.append(f"Total Articles: {record.get('article_count', 0)}")
-        summary_lines.append(f"Total Articles in the Journal List: {record.get('journal_count_tot', 0)}")
+        summary_lines.append("")
+        summary_lines.append("------------------------------------------")
+        summary_lines.append("")        
+      
+    if markdown:    
+        summary_lines.append("## Journal List Publication Summary")
+        summary_lines.append(f"### Overview")
+        summary_lines.append(f"**Total Articles**: {record.get('journal_count_tot', 0)}")
+        summary_lines.append(f"**Total First Author Papers**: {record.get('journal_count_tot_fa', 0)}")
+        summary_lines.append(f"**Total Second Author Papers**: {record.get('journal_count_tot_sa', 0)}")
+        summary_lines.append(f"**Total Last Author Papers**: {record.get('journal_count_tot_la', 0)}")
+        #average_num_authors = record.get('journal_average_num_authors', 0)
+        #summary_lines.append(f"Average Number of Authors per Paper: {average_num_authors:.1f}")
+    else:
+        summary_lines.append("Journal List Publication Summary:")
+        summary_lines.append("")
+        summary_lines.append(f"Overview")
+        summary_lines.append(f"Total Articles: {record.get('journal_count_tot', 0)}")
         summary_lines.append(f"Total First Author Papers: {record.get('journal_count_tot_fa', 0)}")
         summary_lines.append(f"Total Second Author Papers: {record.get('journal_count_tot_sa', 0)}")
         summary_lines.append(f"Total Last Author Papers: {record.get('journal_count_tot_la', 0)}")
         #average_num_authors = record.get('journal_average_num_authors', 0)
         #summary_lines.append(f"Average Number of Authors per Paper: {average_num_authors:.1f}")
         summary_lines.append("")
-        summary_lines.append("------------------------------------------")
-        summary_lines.append("")        
-      
-    if markdown:    
-        summary_lines.append("## Journal / Conference Article Summary")
-    else:
-        summary_lines.append("Journal / Conference Article Summary:")
-        summary_lines.append("(Articles from Journal List Only)")
     
     found_at_least_one = False
     for journal in journal_list:
@@ -1306,7 +1309,14 @@ def set_document_font(doc: Document, name="Arial", size_pt=10):
     for i in range(1, 10):
         means = f"Heading {i}"
         if means in doc.styles:
-            set_style_font(doc.styles[means], name, size_pt + (4 if i == 1 else 2))
+            if i == 1:
+                set_style_font(doc.styles[means], name, size_pt + 5)
+            elif i == 2:
+                set_style_font(doc.styles[means], name, size_pt + 3)
+            elif i == 3:
+                set_style_font(doc.styles[means], name, size_pt + 2)
+            else:
+                set_style_font(doc.styles[means], name, size_pt + 1)
 
     # lists
     for style_name in [
@@ -1380,15 +1390,15 @@ def write_summaries_docx(
         hpf.space_after = Pt(6)
 
     doc.add_heading("Candidate Summary Report", level=1)
-    doc.add_heading("HR Code: " + round_code, level=4)
-    doc.add_heading(round_description, level=4)
+    doc.add_heading("HR Code: " + round_code, level=3)
+    doc.add_heading(round_description, level=3)
     doc.add_paragraph("")
 
-    generated_at = time.strftime("%Y-%m-%d %H:%M")
-    doc.add_heading(f"Generated at {generated_at}", level=4)
+    #generated_at = time.strftime("%Y-%m-%d %H:%M")
+    #doc.add_heading(f"Generated: {generated_at}", level=4)
 
     doc.add_paragraph("")
-    doc.add_heading("Notes regarding journal/conference article lists", level=4)
+    doc.add_heading("Notes regarding journal/conference article lists", level=3)
     doc.add_paragraph("The articles listed for each candidate are the articles published in journals/conference proceedings given the supplied journal list only.", style="List Bullet")
     doc.add_paragraph("The number of citations for an article is shown in square brackets.", style="List Bullet")
     doc.add_paragraph("Articles for a particular journal are ordered by the number of citations.", style="List Bullet")
@@ -1557,6 +1567,9 @@ def process_profile(
         is_empty_record=False,
         markdown=False
     )
+    
+    # add a dummy entry as a break in the spreadsheet
+    record["break"] = "|"
         
     for j in journal_list:
         record[j] = journal_counts.get(j, 0)
@@ -1606,6 +1619,9 @@ def empty_record(
         is_empty_record=True,
         markdown=False
     )    
+    
+    # add a dummy entry as a break in the spreadsheet
+    record["break"] = "|"
    
     for j in journal_list:
         record[j] = NOT_FOUND_NAN
@@ -2066,7 +2082,8 @@ def main():
         "journal_count_tot_la": "Number of Last Author Publications in Journal List",
         "journal_average_num_authors": "Average Number of Authors in Journal List Publications",      
         "summary_markdown": "Full Candidate Research Summary - MD",
-        "summary_plaintext": "Full Candidate Research Summary - Double Click to Open / Use Up & Down Cursor Arrows to Navigate within Field / Escape to Exit",        
+        "summary_plaintext": "Full Candidate Research Summary - Double Click to Open / Use Up & Down Cursor Arrows to Navigate within Field / Escape to Exit",      
+        "break": "|",  # dummy break column  
     }
 
     for j in journal_list:
