@@ -32,6 +32,8 @@ NORMAL_MODE = True
 DEBUG_MODE = False
 ACCEPT_DEFAULTS = False
 FORCE_REFRESH_CACHE = False
+MATCHING_LENIENCY_ACCEPT_THRESHOLD = 4
+LENIENCY_LEVELS =  6  # 0 to 5 inclusive
 
 PUNCT = str.maketrans("", "", string.punctuation)
 
@@ -147,8 +149,10 @@ def match_authors_driver(
     int | None, # position
 ]:
 
-    leniency_levels = 6  # 0 to 5 inclusive
-    for leniency_level in range(0, leniency_levels):
+    global MATCHING_LENIENCY_ACCEPT_THRESHOLD
+    global LENIENCY_LEVELS
+     
+    for leniency_level in range(0, LENIENCY_LEVELS):
         print(f"\n Trying to match authors at leniency level {leniency_level}...")
         (
             highlighted_author_list, 
@@ -159,7 +163,7 @@ def match_authors_driver(
             matching_leniency_level = leniency_level
         )
         if count_highlighted == 1:
-            if leniency_level < 4:
+            if leniency_level <= MATCHING_LENIENCY_ACCEPT_THRESHOLD:
                 print(f"\n Match succeeded for candidate '{candidate_gs_name}'.\n"
                     f" Authors found: {', '.join(highlighted_author_list)}")
                 return highlighted_author_list, position
@@ -194,7 +198,7 @@ def match_authors_driver(
                     f" Authors found: {', '.join(highlighted_author_list)}\n"
                     f" I will reject automatically.")
                 return author_list, None
-        elif leniency_level < leniency_levels - 1:
+        elif leniency_level < LENIENCY_LEVELS - 1:
             # no matches at all - try increasing leniency levels
             print(f" No authors matched candidate '{candidate_gs_name}'.\n"
                 f" Authors found: {', '.join(author_list)}")
@@ -208,9 +212,9 @@ def match_authors_driver(
                 print("  Last author is '...'; I'll assume our lost author is somewhere in there.\n")
                 return author_list, None
             else: 
-                print(f"  Press k to continue with no author or q to quit...\n")
+                print(f"  Press k to keep and continue with no author or q to quit...\n")
                 answer = input(" Enter choice (k/q): ").strip().lower()
-                if answer == "c":
+                if answer == "k":
                     return author_list, position
                 else:
                     raise AuthorMatchError(
@@ -1785,6 +1789,7 @@ def main():
     global DEBUG_MODE
     global ACCEPT_DEFAULTS
     global FORCE_REFRESH_CACHE
+    global MATCHING_LENIENCY_ACCEPT_THRESHOLD
     
     parser = argparse.ArgumentParser(
         description="Snappy - Super Neat Academic Profile Parser"
@@ -2065,6 +2070,26 @@ def main():
             end_candidate_num = default_last
     print(f" Stopping processing on candidate number {end_candidate_num}...\n")
     df_hr = df_hr.iloc[: end_candidate_num - start_candidate_num + 1].reset_index(drop=True)
+    
+    # ask user to enter author match leniency level
+    if ACCEPT_DEFAULTS:
+        print(f"\n Accepting default author match leniency threshold: {MATCHING_LENIENCY_ACCEPT_THRESHOLD}.\n")
+    else:
+        answer = input(
+            f"\n Enter the author match leniency threshold above which snappy will ask for intervention (default {MATCHING_LENIENCY_ACCEPT_THRESHOLD}):\n "
+        )
+        if not answer.strip():
+            pass
+        else:
+            try:
+                answer = int(answer.strip())
+                if answer < 0 or answer > LENIENCY_LEVELS - 1:
+                    print(f" Invalid threshold {answer}, must be between 0 and {LENIENCY_LEVELS - 1}.")
+                else:
+                    MATCHING_LENIENCY_ACCEPT_THRESHOLD = answer
+            except ValueError:
+                print(f" Invalid threshold entered, defaulting to {MATCHING_LENIENCY_ACCEPT_THRESHOLD}.")
+    print(f" Leniency threshold set to {MATCHING_LENIENCY_ACCEPT_THRESHOLD}...\n")
     
     if not OFFLINE_MODE:
         if ACCEPT_DEFAULTS:
