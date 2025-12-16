@@ -30,6 +30,8 @@ FETCH_ONLY_MODE = False
 OFFLINE_MODE = False
 NORMAL_MODE = True
 DEBUG_MODE = False
+ACCEPT_DEFAULTS = False
+FORCE_REFRESH_CACHE = False
 
 PUNCT = str.maketrans("", "", string.punctuation)
 
@@ -135,12 +137,97 @@ def extract_journal_name(raw_info: str) -> str:
 
 # ========================
 
+# deal with the pitfalls of author matching as gracefully as possible
+
+def match_authors_driver(
+    author_list: List[str],
+    candidate_gs_name: str,
+) -> Tuple[
+    List[str],  # highlighted_author_list
+    int | None, # position
+]:
+
+    leniency_levels = 6  # 0 to 5 inclusive
+    for leniency_level in range(0, leniency_levels):
+        print(f"\n Trying to match authors at leniency level {leniency_level}...")
+        (
+            highlighted_author_list, 
+            position, 
+            count_highlighted) = match_authors(
+            author_list = author_list,
+            full_name = candidate_gs_name,
+            matching_leniency_level = leniency_level
+        )
+        if count_highlighted == 1:
+            if leniency_level < 4:
+                print(f"\n Match succeeded for candidate '{candidate_gs_name}'.\n"
+                    f" Authors found: {', '.join(highlighted_author_list)}")
+                return highlighted_author_list, position
+            else:
+                print(f"\n Match succeeded for candidate '{candidate_gs_name}' at leniency level {leniency_level}.\n"
+                    f" Authors found: {', '.join(highlighted_author_list)}\n"
+                    f" but this is a lenient match - please check carefully."                    
+                    f" Press k to keep or r to revert to no authors found...\n")
+                answer = input(" Enter choice (k/r): ").strip().lower()
+                if answer == "k":
+                    return highlighted_author_list, position
+                else:
+                    return author_list, None   
+        elif count_highlighted > 1:
+            if leniency_level == 0:
+                print(f" Multiple ({count_highlighted}) authors matched candidate '{candidate_gs_name}' at strictest level.\n"
+                    f" Authors found: {', '.join(highlighted_author_list)}\n"
+                    f" I will accept automatically.")
+                return highlighted_author_list, position
+            elif leniency_level < 2:
+                # we have too many matches! request user intervention
+                print(f" Multiple ({count_highlighted}) authors matched candidate '{candidate_gs_name}' "
+                    f" Authors found: {', '.join(highlighted_author_list)}\n"
+                    f" Press k to keep or r to revert to no authors found...\n")
+                answer = input(" Enter choice (k/r): ").strip().lower()
+                if answer == "k":
+                    return highlighted_author_list, position
+                else:
+                    return author_list, None        
+            else:
+                print(f" Multiple ({count_highlighted}) authors matched candidate '{candidate_gs_name}' at lenient level.\n"
+                    f" Authors found: {', '.join(highlighted_author_list)}\n"
+                    f" I will reject automatically.")
+                return author_list, None
+        elif leniency_level < leniency_levels - 1:
+            # no matches at all - try increasing leniency levels
+            print(f" No authors matched candidate '{candidate_gs_name}'.\n"
+                f" Authors found: {', '.join(author_list)}")
+            continue
+        else:
+            # no matches at top leniency level
+            print(f"\n  No authors matched candidate '{candidate_gs_name}'.\n"
+                f"  Authors found: {', '.join(author_list)} \n"
+                f"  with last 'author': '{author_list[-1]}'")
+            if author_list[-1] == "...":
+                print("  Last author is '...'; I'll assume our lost author is somewhere in there.\n")
+                return author_list, None
+            else: 
+                print(f"  Press k to continue with no author or q to quit...\n")
+                answer = input(" Enter choice (k/q): ").strip().lower()
+                if answer == "c":
+                    return author_list, position
+                else:
+                    raise AuthorMatchError(
+                        f"No author matched candidate '{candidate_gs_name}' and there is no '...' entry.\n"
+                        f"Authors found: {', '.join(author_list)}"
+                    )
+        
+    return highlighted_author_list, position 
+                
+# ========================
+
 # match author names with candidate name, determine position and highlight matches
 
 def match_authors(
     author_list: List[str],
     full_name: str,
-    strict_initials_check: bool = False
+    matching_leniency_level: int = 0,   
 ) -> Tuple[
     List[str],  # highlighted_author_list
     int | None, # position
@@ -148,23 +235,28 @@ def match_authors(
 ]:
     
     if DEBUG_MODE: print(f"\n Matching authors against candidate full name '{full_name}'")
-    if DEBUG_MODE: print(f" Strict initials check = {strict_initials_check}")
+    if DEBUG_MODE: print(f" Matching leniency level = {matching_leniency_level}")
     highlighted_author_list = []
     position = None
     count_highlighted = 0
     for a in author_list:
-        if compare_initialled_name_with_full_name(
-            initialled_name = a,
-            full_name = full_name,
-            strict_initials_check = strict_initials_check
-        ):
-            if DEBUG_MODE: print(f"  Matched author: {a} with candidate's name {full_name}")
-            # highlight the matched author
-            highlighted_author_list.append(f"**{a}**")
-            count_highlighted += 1
-        else:
-            if DEBUG_MODE: print(f"  Did not match author: {a} with candidate name {full_name}")
-            highlighted_author_list.append(a)
+        try:
+            if compare_initialled_name_with_full_name(
+                initialled_name = a,
+                full_name = full_name,
+                matching_leniency_level = matching_leniency_level
+            ):
+                if DEBUG_MODE: print(f"  Matched author: {a} with candidate's name {full_name}")
+                # highlight the matched author
+                highlighted_author_list.append(f"**{a}**")
+                count_highlighted += 1
+            else:
+                if DEBUG_MODE: print(f"  Did not match author: {a} with candidate name {full_name}")
+                highlighted_author_list.append(a)
+        except:
+            raise #AuthorMatchError(
+                #f"Exception occurred while matching author: {a} with candidate name {full_name}"
+           # )
             
     for i, author in enumerate(highlighted_author_list):
         if author.startswith("**") and author.endswith("**"):
@@ -183,24 +275,27 @@ def match_authors(
 def compare_initialled_name_with_full_name(
     initialled_name: str,
     full_name: str,
-    strict_initials_check: bool = False
+    matching_leniency_level: int = 0,  
 ) -> bool:
     
     global DEBUG_MODE
     
     if DEBUG_MODE: print(f"\n Comparing initialled name '{initialled_name}' with full name '{full_name}'")
-    
-    # search for a hyphen in the intialled name to detect multi-barrelled surnames
-    found_hyphen_initialled_name = False
-    if "-" in initialled_name:
-        found_hyphen_initialled_name = True
-        if DEBUG_MODE: print(f"   Detected hyphen in initialled name '{initialled_name}'.")    
         
-    found_hyphen_full_name = False
-    if "-" in full_name:
-        found_hyphen_full_name = True
-        if DEBUG_MODE: print(f"   Detected hyphen in full name '{full_name}' .")
- 
+    # remove anything in parentheses from full name
+    full_name = re.sub(r"\(.*?\)", "", full_name).strip()
+    
+    # remove academic titles from full name
+    full_name = re.sub(r"\b(Dr|Prof|Professor|Mr|Ms|Mrs|Miss|Sir|Dame|MD|PhD|MSc|BSc|MBA|JD|Esq)\.?\b", "", full_name, flags=re.IGNORECASE).strip()
+    
+    # remove any . from full name
+    full_name = full_name.replace(".", " ").strip()
+    
+    # remove any multiple spaces from full name
+    full_name = re.sub(r"\s+", " ", full_name).strip()
+
+    if DEBUG_MODE: print(f"   Cleaned full name: '{full_name}'")
+    
     # decompose initialled name
     initialled_name_parts = initialled_name.strip().split(" ")
     if len(initialled_name_parts) >= 2:
@@ -209,7 +304,7 @@ def compare_initialled_name_with_full_name(
         initialled_name_surname = " ".join(initialled_name_parts[1:])
     else:
         if initialled_name == "...":
-            if DEBUG_MODE: print(f"  Return False <= Initialled name is '...'.")
+            if DEBUG_MODE: print(f"   Quick exit because initialled name is '...'.")
             return False
         else:
             if DEBUG_MODE: print(f"  Warning - Initialled name '{initialled_name}' does not decompose into initials and surname properly. I will treat this as the surname only.")
@@ -226,6 +321,9 @@ def compare_initialled_name_with_full_name(
         full_name_surname = full_name_parts[-1]
         # add any preceding parts that start with lowercase letters to the surname otherwise treat as initials
         for part in reversed(full_name_parts[:-1]):
+            if not part:
+                continue
+            if DEBUG_MODE: print(f"   Examining part: '{part}'")
             if part[0] != part[0].upper():
                 if DEBUG_MODE: print(f"   First letter '{part[0]}' is not uppercase => add to surname.")
                 full_name_surname = part + " " + full_name_surname
@@ -234,59 +332,115 @@ def compare_initialled_name_with_full_name(
                 full_name_initials = part[0] + full_name_initials
     else:
         raise AuthorMatchError(f"Full name '{full_name}' does not decompose into initials and surname properly.")
-    
+   
     full_name_initialised = " ".join([full_name_initials, full_name_surname]) 
-    
-    # remove hyphens from both names if either has a hyphen
-    if found_hyphen_initialled_name or found_hyphen_full_name:
-        initialled_name = initialled_name.replace("-", " ")
-        full_name_initialised = full_name_initialised.replace("-", " ")       
-        initialled_name_surname = initialled_name_surname.replace("-", " ")
-        full_name_surname = full_name_surname.replace("-", " ")
-        initialled_name_initials = initialled_name_initials.replace("-", "")
-        full_name_initials = full_name_initials.replace("-", "")    
-        if DEBUG_MODE: print(f"   Hyphens removed for comparison: '{initialled_name}' and '{full_name_initialised}'")
+    if DEBUG_MODE: print(f"   Full name initials: '{full_name_initials}'")
+    if DEBUG_MODE: print(f"   Full name surname: '{full_name_surname}'")
+    if DEBUG_MODE: print(f"   Full name initialised: '{full_name_initialised}'")
  
-    # compare surnames
-    if DEBUG_MODE: print(f"   Comparing surnames: '{initialled_name_surname}' with '{full_name_surname}'")
+    def clean_name_component(n: str) -> str:
+        #print(f"   Messy name component: '{n}'")
+        n = n.replace("-", " ")
+        n = re.sub(r"[^a-zA-Z ]", "", n)  # keep letters + spaces
+        n = re.sub(r"\s+", " ", n)        # collapse multiple spaces
+        n = n.strip().lower()
+        #print(f"   Cleaned name component: '{n}'")
+        return n
+
+    initialled_name = clean_name_component(initialled_name)
+    initialled_name_surname = clean_name_component(initialled_name_surname)
+    initialled_name_initials = clean_name_component(initialled_name_initials)
+    full_name = clean_name_component(full_name)
+    full_name_initialised = clean_name_component(full_name_initialised)
+    full_name_surname = clean_name_component(full_name_surname)
+    full_name_initials = clean_name_component(full_name_initials)
+    full_name_condensed = full_name.replace(" ", "")
     
-    if initialled_name_surname.lower() != full_name_surname.lower():
-        if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialled_name_surname}' != '{full_name_surname}")
-        return False
-    else:
-        if DEBUG_MODE: print(f"   Surnames match: '{initialled_name_surname}' == '{full_name_surname}'")
-    
-    # compare initials
-    if DEBUG_MODE: print(f"   Comparing initials: '{initialled_name_initials}' with '{full_name_initials}'")
-    if len(initialled_name_initials) == len(full_name_initials):
-        if DEBUG_MODE: print(f"   Initials length match: {len(initialled_name_initials)} == {len(full_name_initials)}")
-        if initialled_name_initials.lower() == full_name_initials.lower():
-            if DEBUG_MODE: print(f"   Initials match: '{initialled_name_initials}' == '{full_name_initials}'")
-            if DEBUG_MODE: print(f"  Return True <=  '{initialled_name}' == '{full_name_initialised}'")
+    initialled_name_last_word = initialled_name.split(" ")[-1]
+     
+    if matching_leniency_level == 0:
+        # compare full initialled names strictly except for hyphens
+        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - strict full name comparison.")
+        if initialled_name == full_name_initialised:
+            if DEBUG_MODE: print(f"   Return True <=  '{initialled_name}' == '{full_name_initialised}'")
             return True
         else:
-            if DEBUG_MODE: print(f"   Return False <= Initials do not match: '{initialled_name_initials}' != '{full_name_initials}'")
+            if DEBUG_MODE: print(f"   Return False <=  '{initialled_name}' != '{full_name_initialised}'")
             return False
-    else:
-        if strict_initials_check:
-            if DEBUG_MODE: print(f"   Return False <= Strict initials check enabled and lengths do not match: {len(initialled_name_initials)} != {len(full_name_initials)}")
+    
+    elif matching_leniency_level == 1:
+        # compare surnames - strict
+        if DEBUG_MODE: print(f"   Comparing surnames: '{initialled_name_surname}' with '{full_name_surname}'")
+        
+        if initialled_name_surname != full_name_surname:
+            if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialled_name_surname}' != '{full_name_surname}")
             return False
-        # initials length do not match - allow for missing middle initials in either name
-        if DEBUG_MODE: print(f"   Initials length do not match: {len(initialled_name_initials)} != {len(full_name_initials)}")
+        else:
+            if DEBUG_MODE: print(f"   Surnames match: '{initialled_name_surname}' == '{full_name_surname}'")
+        
+        # compare initials - lenient - only match as much as is present
+        if DEBUG_MODE: print(f"   Comparing initials: '{initialled_name_initials}' with '{full_name_initials}'")
+        if len(initialled_name_initials) == len(full_name_initials):
+            if initialled_name_initials == full_name_initials:
+                if DEBUG_MODE: print(f"   Initials match exactly: '{initialled_name_initials}' == '{full_name_initials}'")
+                if DEBUG_MODE: print(f"  Return True <=  '{initialled_name}' == '{full_name_initialised}'")
+                return True
+            else:
+                if DEBUG_MODE: print(f"   Return False <= Initials do not match: '{initialled_name_initials}' != '{full_name_initials}'")
+                return False
         # identify the shorter and longer initials strings and truncate the longer one
-        if len(initialled_name_initials) < len(full_name_initials):
+        elif len(initialled_name_initials) < len(full_name_initials):
             shorter_initials = initialled_name_initials
             longer_initials = full_name_initials[:len(shorter_initials)]
         else:
             shorter_initials = full_name_initials
             longer_initials = initialled_name_initials[:len(shorter_initials)]
         # compare the truncated initials
-        if shorter_initials.lower() != longer_initials.lower():
+        if shorter_initials != longer_initials:
             if DEBUG_MODE: print(f"   Return False <= Initials do not match (missing initials): '{initialled_name_initials}' != '{full_name_initials}'")
             return False
         else:
             if DEBUG_MODE: print(f"   Return True <= Initials match (allowing for missing initials): '{initialled_name_initials}' == '{full_name_initials}'")
             return True
+
+    elif matching_leniency_level == 2:
+        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - ignoring initials, comparing surnames only.")
+        if initialled_name_surname == full_name_surname:
+            if DEBUG_MODE: print(f"   Return True <= Surnames match: '{initialled_name_surname}' == '{full_name_surname}'")
+            return True
+        else:
+            if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialled_name_surname}' != '{full_name_surname}'")
+            return False
+ 
+    elif matching_leniency_level == 3:
+        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - matching author surname {initialled_name_surname} with any component in candidate name {full_name}.")
+        parts = full_name.split(" ")
+        for part in parts:
+            if initialled_name_surname == part:
+                if DEBUG_MODE: print(f"   Return True <= author surname '{initialled_name_surname}' matched with name part '{part}'")
+                return True
+        if DEBUG_MODE: print(f"   Return False <= author surname '{initialled_name_surname}' not found in candidate full name '{full_name}'")
+        return False
+    
+    elif matching_leniency_level == 4:
+        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - last word of author name '{initialled_name_last_word}' with any component in candidate name '{full_name}'.")
+        parts = full_name.split(" ")
+        for part in parts:
+            if initialled_name_last_word == part:
+                if DEBUG_MODE: print(f"   Return True <= author surname '{initialled_name_surname}' matched with name part '{part}'")
+                return True
+        if DEBUG_MODE: print(f"   Return False <= author surname '{initialled_name_surname}' not found in candidate full name '{full_name}'")
+        return False
+    
+    elif matching_leniency_level == 5:
+        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - last word of author name '{initialled_name_last_word}' anywhere in candidate condensed full name '{full_name_condensed}'.")
+        if initialled_name_last_word in full_name_condensed:
+                if DEBUG_MODE: print(f"   Return True <= author surname '{initialled_name_surname}' matched with '{full_name_condensed}'")
+                return True
+        if DEBUG_MODE: print(f"   Return False <= author surname '{initialled_name_surname}' not found in candidate condensed full name '{full_name_condensed}'")
+        return False
+ 
+    raise ValueError(f"Invalid matching leniency level: {matching_leniency_level}")
 
 # =========================
 
@@ -295,7 +449,7 @@ def compare_initialled_name_with_full_name(
 def random_sleep(typical_delay: float) -> None:
 
         sleep_s = random.uniform(typical_delay * 0.5, typical_delay * 1.5)
-        print(f" Random (human-like) delay for {sleep_s:.1f} seconds before proceeding...")
+        print(f" Random (human-like) delay for {sleep_s:.1f} seconds before proceeding...\n")
         time.sleep(sleep_s)
         
 # =========================
@@ -363,7 +517,7 @@ def iter_scholar_pages_requests(
     cstart = 0
     page_index = 0
 
-    while page_index < max_pages:
+    while page_index < max_pages:        
         url = build_list_works_url(base_url, cstart=cstart, pagesize=pagesize)
         print(f"\n Loading publications page {page_index + 1} (cstart={cstart})")
 
@@ -472,6 +626,7 @@ def scrape_it(
         print(f"\n Scraping profile page {page_idx + 1} for {candidate_gs_name}")
     else:
         print(f"\n Scraping profile page {page_idx + 1} for 'UNKNOWN'")
+        candidate_gs_name = "UNKNOWN"
 
     # defaults for front matter 
     institution: Optional[str] = None
@@ -599,7 +754,7 @@ def scrape_it(
             matched_journal = normalised_journal_titles.get(journal_norm)
 
             if matched_journal:
-                print(f"\n Journal match: '{raw_info}' -> '{matched_journal}'")
+                print(f"\n >> Journal match: '{raw_info}' -> '{matched_journal}'")
                 journal_match_counts[matched_journal] += 1
 
                 # ---- capture full publication details ----
@@ -608,6 +763,8 @@ def scrape_it(
 
                 authors = gray_elems[0].get_text(strip=True)
                 journal_info = gray_elems[1].get_text(strip=True)
+                
+                print(f"\n Matched publication: {authors} | {title} | {journal_info}")
                 
                 # ---- cited-by + year live in sibling columns ----
                 cited_by = 0
@@ -636,62 +793,17 @@ def scrape_it(
                 # create a list of authors by separating on commas
                 author_list = [a.strip() for a in authors.split(",") if a.strip()]
                 
-                if DEBUG_MODE: print(f" Author list: {author_list}")
+                print(f"\n Authors: {authors} -> Author list: {author_list}")
                                 
                 # determine which authors match the candidate's name
-                
                 (
                     highlighted_author_list, 
                     position, 
-                    count_highlighted) = match_authors(
-                    author_list = author_list,
-                    full_name = candidate_gs_name or "",
-                    strict_initials_check = False
+                ) = match_authors_driver(
+                    author_list,
+                    candidate_gs_name,
                 )
-                                    
-                '''if count_highlighted == 0:
-                    raise AuthorMatchWarning(
-                        f"No author matched candidate '{candidate_gs_name}' "
-                        f"for journal '{matched_journal}'. "
-                        f"Authors found: {', '.join(author_list)}"
-                    )'''
-                    
-                if count_highlighted > 1:
-                    # request user intervention
-                    print(f"\n Multiple ({count_highlighted}) authors matched candidate "
-                        f"'{candidate_gs_name}' for journal '{matched_journal}'.\n"
-                        f" Authors found: {', '.join(author_list)}\n"
-                        f" Press c to do a stricter name check or s to stop...\n")
-                    answer = input(" Enter choice (c/s): ").strip().lower()
-                    if answer == "s":
-                        raise AuthorMatchError(
-                            f"Multiple ({count_highlighted}) authors matched candidate "
-                            f"'{candidate_gs_name}' for journal '{matched_journal}'. "
-                            f"Authors found: {', '.join(author_list)}"
-                        )
-                    (
-                        highlighted_author_list, 
-                        position, 
-                        count_highlighted) = match_authors(
-                        author_list = author_list,
-                        full_name = candidate_gs_name or "",
-                        strict_initials_check = True
-                    )
-                        
-                    if count_highlighted > 1:
-                        # request user intervention
-                        print(f"\n Multiple ({count_highlighted}) authors matched candidate "
-                            f"'{candidate_gs_name}' for journal '{matched_journal}'.\n"
-                            f" Authors found: {', '.join(author_list)}\n"
-                            f" Please review and press c to continue or s to stop...\n")
-                        answer = input(" Enter choice (c/s): ").strip().lower()
-                        if answer == "s":
-                            raise AuthorMatchError(
-                                f"Multiple ({count_highlighted}) authors matched candidate "
-                                f"'{candidate_gs_name}' for journal '{matched_journal}'. "
-                                f"Authors found: {', '.join(author_list)}"
-                            )
-                    
+                   
                 if position == 1:
                     journal_match_counts_fa[matched_journal] += 1
                 elif position == 2:
@@ -707,7 +819,7 @@ def scrape_it(
                 journal_match_details[matched_journal].append(full_entry)
 
     if not FETCH_ONLY_MODE and DEBUG_MODE:
-        print(f" Total articles on this page: {article_count}")
+        print(f"\n Total articles on this page: {article_count}")
         print(" Journal match counts on this page:")
         for j, c in journal_match_counts.items():
             if c > 0:
@@ -731,7 +843,8 @@ def scrape_it(
         journal_match_details,
         article_count,
     )
-                        
+                     
+                
 # ========================
 
 # step through all GS pages and scrape profile info 
@@ -887,8 +1000,9 @@ def fetch_and_cache_profile(
     max_block_retries: int = MAX_BLOCK_RETRIES_DEFAULT,
     block_backoff_base: float = 10.0,
     html_dir: str = "./html",
-) -> bool:
+) -> bool | None:
 
+    global FORCE_REFRESH_CACHE
     
     print(f" === Fetch and cache: candidate {candidate.candidate_id}: {candidate.candidate_name} ===")
 
@@ -912,6 +1026,19 @@ def fetch_and_cache_profile(
     # set up cache directory
     out_dir = Path(html_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # check whether we already have cached pages
+    if not FORCE_REFRESH_CACHE:
+        existing_pages = 0
+        for page_num in range(1, max_pages + 1):
+            path = out_dir / f"{user_id}_p{page_num}.htm"
+            if path.exists():
+                existing_pages += 1
+            else:
+                break
+        if existing_pages > 0:
+            print(f"\n  Found {existing_pages} existing cached pages for user_id={user_id}, skipping fetch.")
+            return None
 
     for page_idx, html in enumerate(
         iter_scholar_pages_requests(
@@ -967,7 +1094,7 @@ def create_summary(
         #summary_lines.append(f"Email: {record.get('email', 'UNKNOWN')}")
         summary_lines.append(f"**Current Employee**: {record.get('current_employee', 'UNKNOWN')}")
         summary_lines.append(f"**Expertise Area**: {record.get('expertise_area', 'UNKNOWN')}")
-        summary_lines.append(f"**Academic Level**: {record.get('academic_level', 'UNKNOWN')}")
+        summary_lines.append(f"**Academic Level Applied For**: {record.get('academic_level', 'UNKNOWN')}")
         summary_lines.append(f"**PhD Year**: {record.get('PhD_year', 'UNKNOWN')}")
         summary_lines.append(f"**PhD Institution**: {record.get('PhD_institution', 'UNKNOWN')}")
         summary_lines.append(f"**PhD Institution Rank**: {record.get('PhD_institution_rank', 'UNKNOWN')}") 
@@ -978,7 +1105,7 @@ def create_summary(
         #summary_lines.append(f"Email: {record.get('email', 'UNKNOWN')}")
         summary_lines.append(f"Current Employee: {record.get('current_employee', 'UNKNOWN')}")
         summary_lines.append(f"Expertise Area: {record.get('expertise_area', 'UNKNOWN')}")
-        summary_lines.append(f"Academic Level: {record.get('academic_level', 'UNKNOWN')}")
+        summary_lines.append(f"Academic Level Applied For: {record.get('academic_level', 'UNKNOWN')}")
         summary_lines.append(f"PhD Year: {record.get('PhD_year', 'UNKNOWN')}")
         summary_lines.append(f"PhD Institution: {record.get('PhD_institution', 'UNKNOWN')}")
         summary_lines.append(f"PhD Institution Rank: {record.get('PhD_institution_rank', 'UNKNOWN')}")
@@ -994,7 +1121,7 @@ def create_summary(
         summary_lines.append("")
         summary = "\n".join(summary_lines)
         
-        if True:
+        if False:
             if markdown:
                 print("\n ======= FULL SUMMARY - Markdown ======= \n")
             else:
@@ -1121,7 +1248,7 @@ def create_summary(
     # or no space around parentheses
     summary = normalise_punctuation(summary)
     
-    if True:
+    if False:
         if markdown:
             print("\n ======= FULL SUMMARY - Markdown ======= \n")
         else:
@@ -1656,6 +1783,8 @@ def main():
     global NORMAL_MODE
     global BLOCKING_SUSPECTED
     global DEBUG_MODE
+    global ACCEPT_DEFAULTS
+    global FORCE_REFRESH_CACHE
     
     parser = argparse.ArgumentParser(
         description="Snappy - Super Neat Academic Profile Parser"
@@ -1688,6 +1817,12 @@ def main():
         action="store_true",
         help="Accept all default settings and run.",
     )
+    
+    parser.add_argument(
+        "--force-refresh-cache",
+        action="store_true",
+        help="Forces a new fetch of pages already existing in HTML cache.",
+    )
 
 
     args = parser.parse_args()
@@ -1696,6 +1831,7 @@ def main():
     NORMAL_MODE = args.normal   
     DEBUG_MODE = args.debug
     ACCEPT_DEFAULTS = args.accept_defaults
+    FORCE_REFRESH_CACHE = args.force_refresh_cache
     
     print("\n ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
     print(" ~~~~~~ Welcome to Snappy - The Super Neat Academic Profile Parser.py ~~~~~~")
@@ -1979,7 +2115,7 @@ def main():
             
             try:
                 # fetch and cache the pages
-                if fetch_and_cache_profile(
+                flag = fetch_and_cache_profile(
                     candidate=candidate,
                     session=session,
                     pagesize=100,
@@ -1987,11 +2123,14 @@ def main():
                     delay=typical_delay,
                     max_block_retries=max_block_retries,
                     html_dir=html_dir,
-                ):
+                )
+                if flag is None:
+                    print(f"\n Using existing cached pages for candidate {candidate.candidate_id}.\n")
+                    print(" ================================================================\n")
+                elif flag:
                     print(f"\n Successfully fetched and cached pages for candidate {candidate.candidate_id}.\n")
                     print(" ================================================================\n")
                     random_sleep(typical_delay=typical_delay)
-                
                 else: 
                     print(f"\n Unable to fetch pages for candidate {candidate.candidate_id}.\n")
                     print(" ================================================================\n")
