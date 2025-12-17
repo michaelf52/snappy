@@ -144,6 +144,7 @@ def extract_journal_name(raw_info: str) -> str:
 def match_authors_driver(
     author_list: List[str],
     candidate_gs_name: str,
+    matched_journal: str | None = None,
 ) -> Tuple[
     List[str],  # highlighted_author_list
     int | None, # position
@@ -151,8 +152,15 @@ def match_authors_driver(
 
     global MATCHING_LENIENCY_ACCEPT_THRESHOLD
     global LENIENCY_LEVELS
-     
-    for leniency_level in range(0, LENIENCY_LEVELS):
+    
+    if not matched_journal:
+        print(f"\n Matching authors for candidate '{candidate_gs_name}' with NO journal match.")
+        leniency_levels = LENIENCY_LEVELS - 1
+    else:
+        print(f"\n Matching authors for candidate '{candidate_gs_name}' WITH journal match '{matched_journal}'.")
+        leniency_levels = LENIENCY_LEVELS
+         
+    for leniency_level in range(0, leniency_levels):
         print(f"\n Trying to match authors at leniency level {leniency_level}...")
         (
             highlighted_author_list, 
@@ -212,10 +220,10 @@ def match_authors_driver(
                 print("  Last author is '...'; I'll assume our lost author is somewhere in there.\n")
                 return author_list, None
             else: 
-                print(f"  Press k to keep and continue with no author or q to quit...\n")
+                print(f"  Warning - This is odd! Press k to keep and continue with no author or q to quit...\n")
                 answer = input(" Enter choice (k/q): ").strip().lower()
                 if answer == "k":
-                    return author_list, position
+                    return author_list, None
                 else:
                     raise AuthorMatchError(
                         f"No author matched candidate '{candidate_gs_name}' and there is no '...' entry.\n"
@@ -598,21 +606,25 @@ def scrape_it(
     normalised_journal_titles: Dict[str, str],
     page_idx: int,
 ) -> Tuple[
-    Optional[str],          # name
-    Optional[str],          # institution
-    Optional[List[str]],    # research areas
-    Optional[int],          # h_all
-    Optional[int],          # h_5y
-    Optional[int],          # cit_all
-    Optional[int],          # cit_5y
+    str,                    # name
+    str,                    # institution
+    List[str],              # research areas
+    int,                    # h_all
+    int,                    # h_5y
+    int,                    # cit_all
+    int,                    # cit_5y
+    int,                    # article_count
+    int,                    # article_count_fa
+    int,                    # article_count_sa
+    int,                    # article_count_la
     Dict[str, int],         # journal_match_counts
     Dict[str, int],         # journal_match_counts_fa
     Dict[str, int],         # journal_match_counts_sa
     Dict[str, int],         # journal_match_counts_la
     Dict[str, int],         # journal_num_authors
     Dict[str, List[str]],   # journal_match_details
-    int,                    # article_count
 ]:
+    
     global FETCH_ONLY_MODE
     global DEBUG_MODE
     
@@ -621,7 +633,7 @@ def scrape_it(
     # ---------------------------------------------------------------------
     # name tag: <div id="gsc_prf_in">Name</div>
     # ---------------------------------------------------------------------
-    candidate_gs_name: Optional[str] = None
+    candidate_gs_name: str = None
     name_div = soup.find("div", id="gsc_prf_in")
     if name_div:
         candidate_gs_name = name_div.get_text(strip=True)
@@ -633,12 +645,12 @@ def scrape_it(
         candidate_gs_name = "UNKNOWN"
 
     # defaults for front matter 
-    institution: Optional[str] = None
-    research_areas: Optional[List[str]] = None
-    h_all: Optional[int] = None
-    h_5y: Optional[int] = None
-    cit_all: Optional[int] = None
-    cit_5y: Optional[int] = None
+    institution: str = None
+    research_areas: List[str] = None
+    h_all: int = None
+    h_5y: int = None
+    cit_all: int = None
+    cit_5y: int = None
 
     # get the front matter data
     # get it from all pages so that I can keep function signature consistent
@@ -721,13 +733,17 @@ def scrape_it(
     # journal matching in publications table
     # <table id="gsc_a_t">...</table>
     # ---------------------------------------------------------------------
+    article_count = 0
+    article_count_fa = 0
+    article_count_sa = 0
+    article_count_la = 0
     journal_match_counts: Dict[str, int] = {j: 0 for j in journal_list}
     journal_match_counts_fa: Dict[str, int] = {j: 0 for j in journal_list}
     journal_match_counts_sa: Dict[str, int] = {j: 0 for j in journal_list}
     journal_match_counts_la: Dict[str, int] = {j: 0 for j in journal_list}
     journal_num_authors: Dict[str, int] = {j: 0 for j in journal_list}
     journal_match_details: Dict[str, List[str]] = {j: [] for j in journal_list}
-    article_count = 0
+
 
     table_pubs = soup.find("table", id="gsc_a_t")
     if table_pubs and journal_list:
@@ -761,53 +777,62 @@ def scrape_it(
                 print(f"\n >> Journal match: '{raw_info}' -> '{matched_journal}'")
                 journal_match_counts[matched_journal] += 1
 
-                # ---- capture full publication details ----
-                title_elem = td.find("a", class_="gsc_a_at")
-                title = title_elem.get_text(strip=True) if title_elem else "UNKNOWN TITLE"
+            # ---- capture full publication details ----
+            title_elem = td.find("a", class_="gsc_a_at")
+            title = title_elem.get_text(strip=True) if title_elem else "UNKNOWN TITLE"
 
-                authors = gray_elems[0].get_text(strip=True)
-                journal_info = gray_elems[1].get_text(strip=True)
-                
-                print(f"\n Matched publication: {authors} | {title} | {journal_info}")
-                
-                # ---- cited-by + year live in sibling columns ----
-                cited_by = 0
-                year = ""
+            authors = gray_elems[0].get_text(strip=True)
+            journal_info = gray_elems[1].get_text(strip=True)
+            
+            print(f"\n Publication: {authors} | {title} | {journal_info}")
+            
+            # ---- cited-by + year live in sibling columns ----
+            cited_by = 0
+            year = ""
 
-                cited_td = row.find("td", class_="gsc_a_c")
-                if cited_td:
-                    cited_a = cited_td.find("a")  # when citations exist it's usually a link
-                    cited_txt = (cited_a.get_text(strip=True) if cited_a else cited_td.get_text(strip=True))
-                    try:
-                        cited_by = int(cited_txt) if cited_txt else 0
-                    except ValueError:
-                        cited_by = 0
+            cited_td = row.find("td", class_="gsc_a_c")
+            if cited_td:
+                cited_a = cited_td.find("a")  # when citations exist it's usually a link
+                cited_txt = (cited_a.get_text(strip=True) if cited_a else cited_td.get_text(strip=True))
+                try:
+                    cited_by = int(cited_txt) if cited_txt else 0
+                except ValueError:
+                    cited_by = 0
 
-                cited_by_url = ""
-                if cited_td:
-                    cited_a = cited_td.find("a")
-                    if cited_a and cited_a.get("href"):
-                        cited_by_url = cited_a["href"]
+            cited_by_url = ""
+            if cited_td:
+                cited_a = cited_td.find("a")
+                if cited_a and cited_a.get("href"):
+                    cited_by_url = cited_a["href"]
 
-                year_td = row.find("td", class_="gsc_a_y")
-                if year_td:
-                    year_txt = year_td.get_text(strip=True)
-                    year = year_txt  # keep as string; you can int() it if you want
+            year_td = row.find("td", class_="gsc_a_y")
+            if year_td:
+                year_txt = year_td.get_text(strip=True)
+                year = year_txt
 
-                # create a list of authors by separating on commas
-                author_list = [a.strip() for a in authors.split(",") if a.strip()]
-                
-                print(f"\n Authors: {authors} -> Author list: {author_list}")
+            # create a list of authors by separating on commas
+            author_list = [a.strip() for a in authors.split(",") if a.strip()]
+            
+            print(f"\n Authors: {authors} -> Author list: {author_list}")
+                            
+            # determine which authors match the candidate's name
+            (
+                highlighted_author_list, 
+                position, 
+            ) = match_authors_driver(
+                author_list,
+                candidate_gs_name,
+                matched_journal 
+            )
+            
+            if position == 1:
+                article_count_fa += 1
+            elif position == 2:
+                article_count_sa += 1
+            elif position == len(author_list):
+                article_count_la += 1
                                 
-                # determine which authors match the candidate's name
-                (
-                    highlighted_author_list, 
-                    position, 
-                ) = match_authors_driver(
-                    author_list,
-                    candidate_gs_name,
-                )
-                   
+            if matched_journal:       
                 if position == 1:
                     journal_match_counts_fa[matched_journal] += 1
                 elif position == 2:
@@ -839,13 +864,16 @@ def scrape_it(
         h_5y,
         cit_all,
         cit_5y,
+        article_count,            
+        article_count_fa,
+        article_count_sa,
+        article_count_la,           
         journal_match_counts,
         journal_match_counts_fa,
         journal_match_counts_sa,
         journal_match_counts_la,
         journal_num_authors,
         journal_match_details,
-        article_count,
     )
                      
                 
@@ -885,13 +913,16 @@ def scrape_profile_all_publications(
     cit_all: Optional[int] = None
     cit_5y: Optional[int] = None
 
+    total_article_count = 0
+    total_article_count_fa = 0
+    total_article_count_sa = 0
+    total_article_count_la = 0
     total_journal_counts: Dict[str, int] = {j: 0 for j in journal_list}
     total_journal_counts_fa: Dict[str, int] = {j: 0 for j in journal_list}
     total_journal_counts_sa: Dict[str, int] = {j: 0 for j in journal_list}
     total_journal_counts_la: Dict[str, int] = {j: 0 for j in journal_list}
     total_journal_num_authors: Dict[str, int] = {j: 0 for j in journal_list}
     total_journal_details: Dict[str, List[str]] = {j: [] for j in journal_list}
-    total_article_count = 0
 
     any_page = False
     user_id = user_id_from_url(profile_url) or "UNKNOWN"
@@ -921,13 +952,16 @@ def scrape_profile_all_publications(
             h_5y,
             cit_all,
             cit_5y,
+            page_article_count,            
+            page_article_count_fa,
+            page_article_count_sa,
+            page_article_count_la,            
             page_journal_counts,
             page_journal_counts_fa,
             page_journal_counts_sa,
             page_journal_counts_la,
             page_journal_num_authors,
             page_journal_details,
-            page_article_count,
         ) = scrape_it(html, journal_list, normalised_journal_titles, page_idx)   
 
         # accumulate journal counts, details and article counts
@@ -940,6 +974,9 @@ def scrape_profile_all_publications(
             total_journal_details[j].extend(page_journal_details[j])
 
         total_article_count += page_article_count
+        total_article_count_fa += page_article_count_fa
+        total_article_count_sa += page_article_count_sa
+        total_article_count_la += page_article_count_la
         
         page_idx += 1
 
@@ -955,6 +992,9 @@ def scrape_profile_all_publications(
             print(f" h-index (all): {h_all}, h-index (5y): {h_5y}")
             print(f" citations (all): {cit_all}, citations (5y): {cit_5y}")
             print(f" Total articles (all pages): {total_article_count}")
+            print(f" Total first author counts (all pages): {total_article_count_fa}")
+            print(f" Total second author counts (all pages): {total_article_count_sa}")
+            print(f" Total last author counts (all pages): {total_article_count_la}")
             print(" Journal match counts (all pages):")
             for journal, count in total_journal_counts.items():
                 if count > 0:
@@ -981,13 +1021,16 @@ def scrape_profile_all_publications(
         h_5y,
         cit_all,
         cit_5y,
+        total_article_count,        
+        total_article_count_fa,
+        total_article_count_sa,
+        total_article_count_la,        
         total_journal_counts,
         total_journal_counts_fa,
         total_journal_counts_sa,
         total_journal_counts_la,
         total_journal_num_authors,
         total_journal_details,
-        total_article_count,
         any_page
     )
 
@@ -1093,23 +1136,24 @@ def create_summary(
     
     if markdown:
         summary_lines.append(f"# Candidate: {record.get('candidate_id', 'UNKNOWN')} - {record.get('candidate_name', 'UNKNOWN')}")
+        summary_lines.append(f"## Applying for: {record.get('academic_level', 'UNKNOWN')}")
         summary_lines.append(f"**Gender**: {record.get('gender', 'UNKNOWN')}")
         summary_lines.append(f"**Country of residence**: {record.get('country', 'UNKNOWN')}")
         #summary_lines.append(f"Email: {record.get('email', 'UNKNOWN')}")
         summary_lines.append(f"**Current Employee**: {record.get('current_employee', 'UNKNOWN')}")
         summary_lines.append(f"**Expertise Area**: {record.get('expertise_area', 'UNKNOWN')}")
-        summary_lines.append(f"**Academic Level Applied For**: {record.get('academic_level', 'UNKNOWN')}")
+        
         summary_lines.append(f"**PhD Year**: {record.get('PhD_year', 'UNKNOWN')}")
         summary_lines.append(f"**PhD Institution**: {record.get('PhD_institution', 'UNKNOWN')}")
         summary_lines.append(f"**PhD Institution Rank**: {record.get('PhD_institution_rank', 'UNKNOWN')}") 
     else:
         summary_lines.append(f"Candidate: {record.get('candidate_id', 'UNKNOWN')} - {record.get('candidate_name', 'UNKNOWN')}")
+        summary_lines.append(f"Applying for: {record.get('academic_level', 'UNKNOWN')}")
         summary_lines.append(f"Gender: {record.get('gender', 'UNKNOWN')}")
         summary_lines.append(f"Country of residence: {record.get('country', 'UNKNOWN')}")
         #summary_lines.append(f"Email: {record.get('email', 'UNKNOWN')}")
         summary_lines.append(f"Current Employee: {record.get('current_employee', 'UNKNOWN')}")
         summary_lines.append(f"Expertise Area: {record.get('expertise_area', 'UNKNOWN')}")
-        summary_lines.append(f"Academic Level Applied For: {record.get('academic_level', 'UNKNOWN')}")
         summary_lines.append(f"PhD Year: {record.get('PhD_year', 'UNKNOWN')}")
         summary_lines.append(f"PhD Institution: {record.get('PhD_institution', 'UNKNOWN')}")
         summary_lines.append(f"PhD Institution Rank: {record.get('PhD_institution_rank', 'UNKNOWN')}")
@@ -1145,6 +1189,9 @@ def create_summary(
         summary_lines.append(f"**Citations (All | 5y)**: {record.get('citations_all', 0)} | {record.get('citations_5y', 0)}")
         summary_lines.append(f"**h-index (All | 5y)**: {record.get('h_index_all', 0)} | {record.get('h_index_5y', 0)}")
         summary_lines.append(f"**Total Articles**: {record.get('article_count', 0)}")
+        summary_lines.append(f"**Total First Author Papers**: {record.get('article_count_fa',0)}")
+        summary_lines.append(f"**Total Second Author Papers**: {record.get('article_count_sa',0)}")
+        summary_lines.append(f"**Total Last Author Papers**: {record.get('article_count_la',0)}")        
         summary_lines.append("")
     else:
         summary_lines.append(f"Google Scholar Profile Summary:")
@@ -1155,13 +1202,16 @@ def create_summary(
         summary_lines.append(f"h-index (All | 5y): {record.get('h_index_all', 0)} | {record.get('h_index_5y', 0)}")
         summary_lines.append("")
         summary_lines.append(f"Total Articles: {record.get('article_count', 0)}")
+        summary_lines.append(f"Total First Author Papers: {record.get('article_count_fa',0)}")
+        summary_lines.append(f"Total Second Author Papers: {record.get('article_count_sa',0)}")
+        summary_lines.append(f"Total Last Author Papers: {record.get('article_count_la',0)}") 
         summary_lines.append("")
         summary_lines.append("------------------------------------------")
         summary_lines.append("")        
       
     if markdown:    
-        summary_lines.append("## Journal List Publication Summary")
-        summary_lines.append(f"### Overview")
+        summary_lines.append("## Journal List Publications")
+        #summary_lines.append(f"**Overview**")
         summary_lines.append(f"**Total Articles**: {record.get('journal_count_tot', 0)}")
         summary_lines.append(f"**Total First Author Papers**: {record.get('journal_count_tot_fa', 0)}")
         summary_lines.append(f"**Total Second Author Papers**: {record.get('journal_count_tot_sa', 0)}")
@@ -1169,7 +1219,7 @@ def create_summary(
         #average_num_authors = record.get('journal_average_num_authors', 0)
         #summary_lines.append(f"Average Number of Authors per Paper: {average_num_authors:.1f}")
     else:
-        summary_lines.append("Journal List Publication Summary:")
+        summary_lines.append("Journal List Publications:")
         summary_lines.append("")
         summary_lines.append(f"Overview")
         summary_lines.append(f"Total Articles: {record.get('journal_count_tot', 0)}")
@@ -1613,13 +1663,16 @@ def process_profile(
             h_5y,
             cit_all,
             cit_5y,
+            article_count,        
+            article_count_fa,
+            article_count_sa,
+            article_count_la,                   
             journal_counts,
             journal_counts_fa,
             journal_counts_sa,
             journal_counts_la,
             journal_num_authors,
             journal_details,
-            article_count,
             info_found,
         ) = scrape_profile_all_publications(
             profile_url=url,
@@ -1666,6 +1719,9 @@ def process_profile(
         "h_index_all": h_all if h_all is not None else "",
         "h_index_5y": h_5y if h_5y is not None else "",
         "article_count": article_count if article_count is not None else "",
+        "article_count_fa": article_count_fa,
+        "article_count_sa": article_count_sa,
+        "article_count_la": article_count_la,
         "journal_count_tot": sum(journal_counts.values()),
         "journal_count_tot_fa": sum(journal_counts_fa.values()),
         "journal_count_tot_sa": sum(journal_counts_sa.values()),
@@ -1732,6 +1788,9 @@ def empty_record(
         "h_index_all": NOT_FOUND_NAN,
         "h_index_5y": NOT_FOUND_NAN,
         "article_count": NOT_FOUND_NAN,
+        "article_count_fa": NOT_FOUND_NAN,
+        "article_count_sa": NOT_FOUND_NAN,
+        "article_count_la": NOT_FOUND_NAN,
         "journal_count_tot": NOT_FOUND_NAN,
         "journal_count_tot_fa": NOT_FOUND_NAN,
         "journal_count_tot_sa": NOT_FOUND_NAN,
@@ -2239,11 +2298,14 @@ def main():
         "citations_5y": "Citations (5y)",
         "h_index_all": "H-index (All)",
         "h_index_5y": "H-index (5y)",
-        "article_count": "Total Number of Publications",
-        "journal_count_tot": "Total Number of Publications in Journal List",
-        "journal_count_tot_fa": "Number of First Author Publications in Journal List",
-        "journal_count_tot_sa": "Number of Second Author Publications in Journal List",
-        "journal_count_tot_la": "Number of Last Author Publications in Journal List",
+        "article_count": "Total Number of Publications (All)",
+        "article_count_fa": "Total Number of First Author Publications (All)",
+        "article_count_sa": "Total Number of Second Author Publications (All)",
+        "article_count_la": "Total Number of Last Author Publications (All)",        
+        "journal_count_tot": "Total Number of Publications (Journal List)",
+        "journal_count_tot_fa": "Number of First Author Publications (Journal List)",
+        "journal_count_tot_sa": "Number of Second Author Publications (Journal List)",
+        "journal_count_tot_la": "Number of Last Author Publications (Journal List)",
         "journal_average_num_authors": "Average Number of Authors in Journal List Publications",      
         "summary_markdown": "Full Candidate Research Summary - MD",
         "summary_plaintext": "Full Candidate Research Summary - Double Click to Open / Use Up & Down Cursor Arrows to Navigate within Field / Escape to Exit",      
