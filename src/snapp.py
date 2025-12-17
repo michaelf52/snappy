@@ -167,7 +167,7 @@ def match_authors_driver(
             position, 
             count_highlighted) = match_authors(
             author_list = author_list,
-            full_name = candidate_gs_name,
+            profile_name = candidate_gs_name,
             matching_leniency_level = leniency_level
         )
         if count_highlighted == 1:
@@ -238,7 +238,7 @@ def match_authors_driver(
 
 def match_authors(
     author_list: List[str],
-    full_name: str,
+    profile_name: str,
     matching_leniency_level: int = 0,   
 ) -> Tuple[
     List[str],  # highlighted_author_list
@@ -246,28 +246,28 @@ def match_authors(
     int         # count_highlighted
 ]:
     
-    if DEBUG_MODE: print(f"\n Matching authors against candidate full name '{full_name}'")
+    if DEBUG_MODE: print(f"\n Matching authors against candidate profile name '{profile_name}'")
     if DEBUG_MODE: print(f" Matching leniency level = {matching_leniency_level}")
     highlighted_author_list = []
     position = None
     count_highlighted = 0
     for a in author_list:
         try:
-            if compare_initialled_name_with_full_name(
-                initialled_name = a,
-                full_name = full_name,
+            if compare_author_name_with_profile_name(
+                author_name = a,
+                profile_name = profile_name,
                 matching_leniency_level = matching_leniency_level
             ):
-                if DEBUG_MODE: print(f"  Matched author: {a} with candidate's name {full_name}")
+                if DEBUG_MODE: print(f"  Matched author: {a} with candidate profile's name {profile_name}")
                 # highlight the matched author
                 highlighted_author_list.append(f"**{a}**")
                 count_highlighted += 1
             else:
-                if DEBUG_MODE: print(f"  Did not match author: {a} with candidate name {full_name}")
+                if DEBUG_MODE: print(f"  Did not match author: {a} with candidate's profile name {profile_name}")
                 highlighted_author_list.append(a)
         except:
             raise #AuthorMatchError(
-                #f"Exception occurred while matching author: {a} with candidate name {full_name}"
+                #f"Exception occurred while matching author: {a} with candidate name {profile_name}"
            # )
             
     for i, author in enumerate(highlighted_author_list):
@@ -280,75 +280,77 @@ def match_authors(
 
 # ========================
 
-# compare author name to candidate name
+# compare author name to candidate profile name
 # candidate name is assumed to be full name format "Firstname Middlename Surname"
 # author name is assumed to be in "Initials Surname" format
+# however we have to deal with various oddities due to the fact that Google Scholar
+# allows authors to create their own profile names and author lists have inconsistent formats
 
-def compare_initialled_name_with_full_name(
-    initialled_name: str,
-    full_name: str,
+def compare_author_name_with_profile_name(
+    author_name: str,
+    profile_name: str,
     matching_leniency_level: int = 0,  
 ) -> bool:
     
     global DEBUG_MODE
     
-    if DEBUG_MODE: print(f"\n Comparing initialled name '{initialled_name}' with full name '{full_name}'")
+    if DEBUG_MODE: print(f"\n Comparing author name '{author_name}' with profile name '{profile_name}'")
         
-    # remove anything in parentheses from full name
-    full_name = re.sub(r"\(.*?\)", "", full_name).strip()
+    # remove anything in parentheses from profile name
+    profile_name = re.sub(r"\(.*?\)", "", profile_name).strip()
     
-    # remove academic titles from full name
-    full_name = re.sub(r"\b(Dr|Prof|Professor|Mr|Ms|Mrs|Miss|Sir|Dame|MD|PhD|MSc|BSc|MBA|JD|Esq)\.?\b", "", full_name, flags=re.IGNORECASE).strip()
+    # remove academic titles from profile name
+    profile_name = re.sub(r"\b(Dr|Prof|Professor|Mr|Ms|Mrs|Miss|Sir|Dame|MD|PhD|MSc|BSc|MBA|JD|Esq)\.?\b", "", profile_name, flags=re.IGNORECASE).strip()
     
-    # remove any . from full name
-    full_name = full_name.replace(".", " ").strip()
+    # remove any . from profile name
+    profile_name = profile_name.replace(".", " ").strip()
     
-    # remove any multiple spaces from full name
-    full_name = re.sub(r"\s+", " ", full_name).strip()
+    # remove any multiple spaces from profile name
+    profile_name = re.sub(r"\s+", " ", profile_name).strip()
 
-    if DEBUG_MODE: print(f"   Cleaned full name: '{full_name}'")
+    if DEBUG_MODE: print(f"   Cleaned profile name: '{profile_name}'")
     
     # decompose initialled name
-    initialled_name_parts = initialled_name.strip().split(" ")
-    if len(initialled_name_parts) >= 2:
-        initialled_name_initials = initialled_name_parts[0]
+    author_name_parts = author_name.strip().split(" ")
+    if len(author_name_parts) >= 2:
+        author_name_initials = author_name_parts[0]
         # assume the rest forms the surname (including any multi-barrelled parts)
-        initialled_name_surname = " ".join(initialled_name_parts[1:])
+        author_name_surname = " ".join(author_name_parts[1:])
     else:
-        if initialled_name == "...":
+        if author_name == "...":
             if DEBUG_MODE: print(f"   Quick exit because initialled name is '...'.")
             return False
         else:
-            if DEBUG_MODE: print(f"  Warning - Initialled name '{initialled_name}' does not decompose into initials and surname properly. I will treat this as the surname only.")
-            initialled_name_surname = initialled_name
-            initialled_name_initials = ""
+            if DEBUG_MODE: print(f"  Warning - Author name '{author_name}' does not decompose into initials and surname properly. I will treat this as the surname only.")
+            author_name_surname = author_name
+            author_name_initials = ""
         
     # decompose full name and reconstruct as an initialled name
-    full_name_parts = full_name.strip().split(" ")    
+    profile_name_parts = profile_name.strip().split(" ")    
     
-    if len(full_name_parts) >= 2:
-        full_name_initials = ""
+    if len(profile_name_parts) >= 2:
+        profile_name_initials = ""
         # initial assumption that this is not a multi-barrelled surname
-        if DEBUG_MODE: print(f"   Last word -> forms surname base: {full_name_parts[-1]}")
-        full_name_surname = full_name_parts[-1]
+        if DEBUG_MODE: print(f"   Last word -> forms surname base: {profile_name_parts[-1]}")
+        profile_name_surname = profile_name_parts[-1]
         # add any preceding parts that start with lowercase letters to the surname otherwise treat as initials
-        for part in reversed(full_name_parts[:-1]):
+        for part in reversed(profile_name_parts[:-1]):
             if not part:
                 continue
             if DEBUG_MODE: print(f"   Examining part: '{part}'")
             if part[0] != part[0].upper():
                 if DEBUG_MODE: print(f"   First letter '{part[0]}' is not uppercase => add to surname.")
-                full_name_surname = part + " " + full_name_surname
+                profile_name_surname = part + " " + profile_name_surname
             else:
                 if DEBUG_MODE: print(f"   First letter '{part[0]}' is uppercase => add it to the initials string.")
-                full_name_initials = part[0] + full_name_initials
+                profile_name_initials = part[0] + profile_name_initials
     else:
-        raise AuthorMatchError(f"Full name '{full_name}' does not decompose into initials and surname properly.")
+        raise AuthorMatchError(f"Profile name '{profile_name}' does not decompose into initials and surname properly.")
    
-    full_name_initialised = " ".join([full_name_initials, full_name_surname]) 
-    if DEBUG_MODE: print(f"   Full name initials: '{full_name_initials}'")
-    if DEBUG_MODE: print(f"   Full name surname: '{full_name_surname}'")
-    if DEBUG_MODE: print(f"   Full name initialised: '{full_name_initialised}'")
+    profile_name_initialised = " ".join([profile_name_initials, profile_name_surname]) 
+    if DEBUG_MODE: print(f"   Profile name initials: '{profile_name_initials}'")
+    if DEBUG_MODE: print(f"   Profile name surname: '{profile_name_surname}'")
+    if DEBUG_MODE: print(f"   Profile name initialised: '{profile_name_initialised}'")
  
     def clean_name_component(n: str) -> str:
         #print(f"   Messy name component: '{n}'")
@@ -359,97 +361,97 @@ def compare_initialled_name_with_full_name(
         #print(f"   Cleaned name component: '{n}'")
         return n
 
-    initialled_name = clean_name_component(initialled_name)
-    initialled_name_surname = clean_name_component(initialled_name_surname)
-    initialled_name_initials = clean_name_component(initialled_name_initials)
-    full_name = clean_name_component(full_name)
-    full_name_initialised = clean_name_component(full_name_initialised)
-    full_name_surname = clean_name_component(full_name_surname)
-    full_name_initials = clean_name_component(full_name_initials)
-    full_name_condensed = full_name.replace(" ", "")
+    author_name = clean_name_component(author_name)
+    author_name_surname = clean_name_component(author_name_surname)
+    author_name_initials = clean_name_component(author_name_initials)
+    profile_name = clean_name_component(profile_name)
+    profile_name_initialised = clean_name_component(profile_name_initialised)
+    profile_name_surname = clean_name_component(profile_name_surname)
+    profile_name_initials = clean_name_component(profile_name_initials)
+    profile_name_condensed = profile_name.replace(" ", "")
     
-    initialled_name_last_word = initialled_name.split(" ")[-1]
+    author_name_last_word = author_name.split(" ")[-1]
      
     if matching_leniency_level == 0:
         # compare full initialled names strictly except for hyphens
         if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - strict full name comparison.")
-        if initialled_name == full_name_initialised:
-            if DEBUG_MODE: print(f"   Return True <=  '{initialled_name}' == '{full_name_initialised}'")
+        if author_name == profile_name_initialised:
+            if DEBUG_MODE: print(f"   Return True <=  '{author_name}' == '{profile_name_initialised}'")
             return True
         else:
-            if DEBUG_MODE: print(f"   Return False <=  '{initialled_name}' != '{full_name_initialised}'")
+            if DEBUG_MODE: print(f"   Return False <=  '{author_name}' != '{profile_name_initialised}'")
             return False
     
     elif matching_leniency_level == 1:
         # compare surnames - strict
-        if DEBUG_MODE: print(f"   Comparing surnames: '{initialled_name_surname}' with '{full_name_surname}'")
+        if DEBUG_MODE: print(f"   Comparing surnames: '{author_name_surname}' with '{profile_name_surname}'")
         
-        if initialled_name_surname != full_name_surname:
-            if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialled_name_surname}' != '{full_name_surname}")
+        if author_name_surname != profile_name_surname:
+            if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{author_name_surname}' != '{profile_name_surname}")
             return False
         else:
-            if DEBUG_MODE: print(f"   Surnames match: '{initialled_name_surname}' == '{full_name_surname}'")
+            if DEBUG_MODE: print(f"   Surnames match: '{author_name_surname}' == '{profile_name_surname}'")
         
         # compare initials - lenient - only match as much as is present
-        if DEBUG_MODE: print(f"   Comparing initials: '{initialled_name_initials}' with '{full_name_initials}'")
-        if len(initialled_name_initials) == len(full_name_initials):
-            if initialled_name_initials == full_name_initials:
-                if DEBUG_MODE: print(f"   Initials match exactly: '{initialled_name_initials}' == '{full_name_initials}'")
-                if DEBUG_MODE: print(f"  Return True <=  '{initialled_name}' == '{full_name_initialised}'")
+        if DEBUG_MODE: print(f"   Comparing initials: '{author_name_initials}' with '{profile_name_initials}'")
+        if len(author_name_initials) == len(profile_name_initials):
+            if author_name_initials == profile_name_initials:
+                if DEBUG_MODE: print(f"   Initials match exactly: '{author_name_initials}' == '{profile_name_initials}'")
+                if DEBUG_MODE: print(f"  Return True <=  '{author_name}' == '{profile_name_initialised}'")
                 return True
             else:
-                if DEBUG_MODE: print(f"   Return False <= Initials do not match: '{initialled_name_initials}' != '{full_name_initials}'")
+                if DEBUG_MODE: print(f"   Return False <= Initials do not match: '{author_name_initials}' != '{profile_name_initials}'")
                 return False
         # identify the shorter and longer initials strings and truncate the longer one
-        elif len(initialled_name_initials) < len(full_name_initials):
-            shorter_initials = initialled_name_initials
-            longer_initials = full_name_initials[:len(shorter_initials)]
+        elif len(author_name_initials) < len(profile_name_initials):
+            shorter_initials = author_name_initials
+            longer_initials = profile_name_initials[:len(shorter_initials)]
         else:
-            shorter_initials = full_name_initials
-            longer_initials = initialled_name_initials[:len(shorter_initials)]
+            shorter_initials = profile_name_initials
+            longer_initials = author_name_initials[:len(shorter_initials)]
         # compare the truncated initials
         if shorter_initials != longer_initials:
-            if DEBUG_MODE: print(f"   Return False <= Initials do not match (missing initials): '{initialled_name_initials}' != '{full_name_initials}'")
+            if DEBUG_MODE: print(f"   Return False <= Initials do not match (missing initials): '{author_name_initials}' != '{profile_name_initials}'")
             return False
         else:
-            if DEBUG_MODE: print(f"   Return True <= Initials match (allowing for missing initials): '{initialled_name_initials}' == '{full_name_initials}'")
+            if DEBUG_MODE: print(f"   Return True <= Initials match (allowing for missing initials): '{author_name_initials}' == '{profile_name_initials}'")
             return True
 
     elif matching_leniency_level == 2:
         if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - ignoring initials, comparing surnames only.")
-        if initialled_name_surname == full_name_surname:
-            if DEBUG_MODE: print(f"   Return True <= Surnames match: '{initialled_name_surname}' == '{full_name_surname}'")
+        if author_name_surname == profile_name_surname:
+            if DEBUG_MODE: print(f"   Return True <= Surnames match: '{author_name_surname}' == '{profile_name_surname}'")
             return True
         else:
-            if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{initialled_name_surname}' != '{full_name_surname}'")
+            if DEBUG_MODE: print(f"   Return False <= Surnames do not match: '{author_name_surname}' != '{profile_name_surname}'")
             return False
  
     elif matching_leniency_level == 3:
-        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - matching author surname {initialled_name_surname} with any component in candidate name {full_name}.")
-        parts = full_name.split(" ")
+        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - matching author surname {author_name_surname} with any component in candidate profile name {profile_name}.")
+        parts = profile_name.split(" ")
         for part in parts:
-            if initialled_name_surname == part:
-                if DEBUG_MODE: print(f"   Return True <= author surname '{initialled_name_surname}' matched with name part '{part}'")
+            if author_name_surname == part:
+                if DEBUG_MODE: print(f"   Return True <= author surname '{author_name_surname}' matched with name part '{part}'")
                 return True
-        if DEBUG_MODE: print(f"   Return False <= author surname '{initialled_name_surname}' not found in candidate full name '{full_name}'")
+        if DEBUG_MODE: print(f"   Return False <= author surname '{author_name_surname}' not found in candidate profile name '{profile_name}'")
         return False
     
     elif matching_leniency_level == 4:
-        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - last word of author name '{initialled_name_last_word}' with any component in candidate name '{full_name}'.")
-        parts = full_name.split(" ")
+        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - last word of author name '{author_name_last_word}' with any component in candidate profile name '{profile_name}'.")
+        parts = profile_name.split(" ")
         for part in parts:
-            if initialled_name_last_word == part:
-                if DEBUG_MODE: print(f"   Return True <= author surname '{initialled_name_surname}' matched with name part '{part}'")
+            if author_name_last_word == part:
+                if DEBUG_MODE: print(f"   Return True <= author surname '{author_name_surname}' matched with name part '{part}'")
                 return True
-        if DEBUG_MODE: print(f"   Return False <= author surname '{initialled_name_surname}' not found in candidate full name '{full_name}'")
+        if DEBUG_MODE: print(f"   Return False <= author surname '{author_name_surname}' not found in candidate profile name '{profile_name}'")
         return False
     
     elif matching_leniency_level == 5:
-        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - last word of author name '{initialled_name_last_word}' anywhere in candidate condensed full name '{full_name_condensed}'.")
-        if initialled_name_last_word in full_name_condensed:
-                if DEBUG_MODE: print(f"   Return True <= author surname '{initialled_name_surname}' matched with '{full_name_condensed}'")
+        if DEBUG_MODE: print(f"   Matching leniency level {matching_leniency_level} - last word of author name '{author_name_last_word}' anywhere in candidate condensed full name '{profile_name_condensed}'.")
+        if author_name_last_word in profile_name_condensed:
+                if DEBUG_MODE: print(f"   Return True <= author surname '{author_name_surname}' matched with '{profile_name_condensed}'")
                 return True
-        if DEBUG_MODE: print(f"   Return False <= author surname '{initialled_name_surname}' not found in candidate condensed full name '{full_name_condensed}'")
+        if DEBUG_MODE: print(f"   Return False <= author surname '{author_name_surname}' not found in candidate condensed full name '{profile_name_condensed}'")
         return False
  
     raise ValueError(f"Invalid matching leniency level: {matching_leniency_level}")
